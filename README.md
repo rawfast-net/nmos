@@ -1,14 +1,14 @@
 # nmos
 
-**NoMoreOverSell** — CLI to check whether a VDS matches what was sold.
+**NoMoreOverSell** — CLI для проверки, совпадает ли VDS с тем, что продали.
 
-Measures CPU, RAM, disk, and network, then compares results to plan claims (`--claim-*`). Useful when you suspect oversell, underclocked cores, ballooned RAM, or a fake CPU model.
+Снимает CPU, RAM, диск и сеть, сверяет с тарифом (`--claim-*`). Имеет смысл, если подозреваете оверселл, урезанные ядра, balloon RAM или подмену модели CPU.
 
-Provided by [rawfast.net](https://rawfast.net).
+Проект от [rawfast.net](https://rawfast.net).
 
-## Install
+## Установка
 
-### From source (on the VDS)
+### Из исходников (на VDS)
 
 ```bash
 git clone https://github.com/rawfast-net/nmos.git
@@ -16,22 +16,22 @@ cd nmos
 bash install.sh
 ```
 
-Needs Rust (`rustup`) and a C toolchain. Binary goes to `/usr/local/bin/nmos`.
+Нужны Rust (`rustup`) и C-toolchain. Бинарник ставится в `/usr/local/bin/nmos`.
 
-### Cross-build on Windows (Docker → Debian 12)
+### Сборка на Windows (Docker → Debian 12)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-linux.ps1
 scp dist\nmos root@HOST:/usr/local/bin/nmos
 ```
 
-## Usage
+## Запуск
 
 ```bash
-# quick scan
+# быстрый скан
 nmos
 
-# compare against the plan
+# сверка с тарифом
 nmos \
   --claim-cores 4 \
   --claim-ram-gb 8 \
@@ -40,41 +40,41 @@ nmos \
   --claim-net-mbps 1000 \
   -d 6
 
-# JSON only
+# только JSON
 nmos --json --claim-cores 2 --claim-ram-gb 4
 
-# skip heavy tests
+# без тяжёлых тестов
 nmos --skip-stress --skip-speed --skip-disk
 ```
 
-### Flags
+### Флаги
 
-| Flag | Default | Meaning |
-|------|---------|---------|
-| `-d, --duration` | `4` | stress phase length, seconds |
-| `--claim-cores` | — | sold vCPU count |
-| `--claim-ram-gb` | — | sold RAM, GB |
-| `--claim-disk-gb` | — | sold disk, GB |
-| `--claim-cpu` | — | sold CPU model string |
-| `--claim-net-mbps` | — | sold bandwidth, Mbps |
+| Флаг | По умолчанию | Назначение |
+|------|--------------|------------|
+| `-d, --duration` | `4` | длительность стресс-фазы, сек |
+| `--claim-cores` | — | сколько vCPU продали |
+| `--claim-ram-gb` | — | RAM по тарифу, GB |
+| `--claim-disk-gb` | — | диск по тарифу, GB |
+| `--claim-cpu` | — | модель CPU из тарифа |
+| `--claim-net-mbps` | — | канал по тарифу, Mbps |
 | `--region` | `auto` | `auto` / `ru` / `intl` / `all` |
-| `--speed-mb` | `100` | download test size |
-| `--disk-mb` | `256` | disk I/O test size |
-| `--mem-mb` | `512` | RAM alloc/verify size |
-| `--offline` | off | no outbound requests |
-| `--json` | off | machine-readable report |
+| `--speed-mb` | `100` | размер download-теста |
+| `--disk-mb` | `256` | размер disk I/O теста |
+| `--mem-mb` | `512` | размер проверки RAM |
+| `--offline` | off | без внешних запросов |
+| `--json` | off | машинный отчёт |
 
-## What it checks
+## Что проверяет
 
-- CPU model / flags / CPUID vs catalog
-- Steal time, cgroup quota, PSI, throttle
-- Stress ST/MT scaling (oversell signal)
-- RAM alloc + pattern verify
-- Disk seq / random 4K + checksum after fsync
-- Public IP, latency, download speed (Selectel / intl)
+- модель CPU / флаги / CPUID против каталога
+- steal, cgroup quota, PSI, throttle
+- stress ST/MT scaling (признак оверселла)
+- alloc RAM + проверка паттерна
+- диск seq / random 4K + checksum после fsync
+- внешний IP, latency, скорость (Selectel / intl)
 
-Scores are approximate. On shared hosts, re-run off-peak with `-d 5..10` and idle load.
+Цифры приблизительные. На shared лучше гонять вне пика с `-d 5..10` и без нагрузки на машине.
 
-## License
+## Лицензия
 
 MIT
