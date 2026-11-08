@@ -1,80 +1,71 @@
 # nmos
 
-**NoMoreOverSell** — CLI для проверки, совпадает ли VDS с тем, что продали.
-
-Снимает CPU, RAM, диск и сеть, сверяет с тарифом (`--claim-*`). Имеет смысл, если подозреваете оверселл, урезанные ядра, balloon RAM или подмену модели CPU.
-
-Проект от [rawfast.net](https://rawfast.net).
+Утилита для проверки процессора, памяти, диска и сети на VDS.
 
 ## Установка
 
-### Из исходников (на VDS)
+Для Linux x86_64:
 
 ```bash
-git clone https://github.com/rawfast-net/nmos.git
-cd nmos
-bash install.sh
+curl -fsSL https://github.com/rawfast-net/nmos/releases/latest/download/install-release.sh | bash
 ```
 
-Нужны Rust (`rustup`) и C-toolchain. Бинарник ставится в `/usr/local/bin/nmos`.
-
-### Сборка на Windows (Docker → Debian 12)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build-linux.ps1
-scp dist\nmos root@HOST:/usr/local/bin/nmos
-```
-
-## Запуск
+## Проверка сервера
 
 ```bash
-# быстрый скан
 nmos
-
-# сверка с тарифом
-nmos \
-  --claim-cores 4 \
-  --claim-ram-gb 8 \
-  --claim-disk-gb 80 \
-  --claim-cpu "EPYC 7763" \
-  --claim-net-mbps 1000 \
-  -d 6
-
-# только JSON
-nmos --json --claim-cores 2 --claim-ram-gb 4
-
-# без тяжёлых тестов
-nmos --skip-stress --skip-speed --skip-disk
 ```
 
-### Флаги
+Чтобы сравнить данные сервера с тарифом:
 
-| Флаг | По умолчанию | Назначение |
-|------|--------------|------------|
-| `-d, --duration` | `4` | длительность стресс-фазы, сек |
-| `--claim-cores` | — | сколько vCPU продали |
-| `--claim-ram-gb` | — | RAM по тарифу, GB |
-| `--claim-disk-gb` | — | диск по тарифу, GB |
-| `--claim-cpu` | — | модель CPU из тарифа |
-| `--claim-net-mbps` | — | канал по тарифу, Mbps |
-| `--region` | `auto` | `auto` / `ru` / `intl` / `all` |
-| `--speed-mb` | `100` | размер download-теста |
-| `--disk-mb` | `256` | размер disk I/O теста |
-| `--mem-mb` | `512` | размер проверки RAM |
-| `--offline` | off | без внешних запросов |
-| `--json` | off | машинный отчёт |
+```bash
+nmos --claim-cores 4 --claim-ram-gb 8 --claim-disk-gb 80 --claim-cpu "EPYC 7763" --claim-net-mbps 1000
+```
 
-## Что проверяет
+Без внешних запросов:
 
-- модель CPU / флаги / CPUID против каталога
-- steal, cgroup quota, PSI, throttle
-- stress ST/MT scaling (признак оверселла)
-- alloc RAM + проверка паттерна
-- диск seq / random 4K + checksum после fsync
-- внешний IP, latency, скорость (Selectel / intl)
+```bash
+nmos --offline
+```
 
-Цифры приблизительные. На shared лучше гонять вне пика с `-d 5..10` и без нагрузки на машине.
+Все параметры доступны через `nmos --help`.
+
+## Мониторинг
+
+```bash
+nmos --monitor --monitor-interval 900 --monitor-count 96 > monitor.jsonl
+```
+
+Команда сохраняет показатели CPU каждые 15 минут в течение суток. Нагрузочные тесты не запускаются.
+
+## Тест SQLite
+
+```bash
+nmos --db-bench --db-dir /var/tmp
+```
+
+Тест проверяет запись и случайное чтение базы. По умолчанию используются 500 MiB данных и 5000 операций на каждом этапе. Во время теста нужно свободное место на диске; после принудительного завершения временные файлы могут остаться. Результат чтения зависит от кэша.
+
+## Публикация результата
+
+После проверки программа предложит подготовить результат для страницы. Можно отказаться. При согласии nmos покажет данные и создаст ссылку на GitHub Issue, который нужно отправить вручную. После проверки модератором результат появится на странице.
+
+Issue в публичном репозитории виден всем сразу после отправки. Перед отправкой проверьте его содержимое. IP, MAC и hostname не включаются в подготовленный результат, но текстовые поля могут содержать данные, которые вы не хотите публиковать.
+
+
+
+## Как читать результаты
+
+Тест показывает состояние сервера во время проверки. Результаты могут меняться в зависимости от нагрузки и времени суток. По одному запуску нельзя точно определить коэффициент перепродажи ресурсов или физическую модель процессора.
+
+## Сборка из исходников
+
+```bash
+cargo build --release --locked
+```
+
+Для сборки нужны Rust и C-компилятор.
 
 ## Лицензия
 
-MIT
+MIT. Проект [rawfast.net](https://rawfast.net).

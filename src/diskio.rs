@@ -16,7 +16,7 @@ pub struct DiskIoResult {
     pub verify_ok: Option<bool>,
     pub checksum_expected: Option<u64>,
     pub checksum_got: Option<u64>,
-    /// Слишком быстрый read+идеальный write без реальной задержки — подозрение на tmpfs/RAM
+    
     pub looks_like_ramdisk: bool,
     pub rand_read_iops: Option<f64>,
     pub rand_read_lat_us_p99: Option<f64>,
@@ -30,7 +30,7 @@ pub fn run(size_mb: u64) -> DiskIoResult {
     let path = work_file();
     let path_str = path.display().to_string();
 
-    // Паттерн-чанк с seed
+    
     let seed = 0xDEAD_BEEF_CAFE_u64;
     let chunk = patterned_chunk(1024 * 1024, seed);
 
@@ -42,7 +42,7 @@ pub fn run(size_mb: u64) -> DiskIoResult {
         }
     };
 
-    // fsync latency
+    
     let (fsync_avg, fsync_n) = match fsync_latency(&path, 32) {
         Ok((avg, n)) => (Some(avg), n),
         Err(e) => {
@@ -51,15 +51,15 @@ pub fn run(size_mb: u64) -> DiskIoResult {
         }
     };
 
-    // Закрыли/открыли заново + checksum verify (не из того же буфера)
+    
     let (verify_ok, checksum_expected, checksum_got) = match verify_file_checksum(&path, size_mb as usize, seed)
     {
         Ok((ok, exp, got)) => {
             if ok {
-                notes.push("Checksum после reopen+fsync: OK — данные реально на ФС".into());
+                notes.push("Checksum после reopen+fsync: OK — данные прочитаны после повторного открытия файла".into());
             } else {
                 notes.push(format!(
-                    "Checksum FAIL exp={exp:#x} got={got:#x} — диск/кэш врёт"
+                    "Checksum FAIL exp={exp:#x} got={got:#x} — контрольная сумма не совпала"
                 ));
             }
             (Some(ok), Some(exp), Some(got))
@@ -79,7 +79,7 @@ pub fn run(size_mb: u64) -> DiskIoResult {
         }
     };
 
-    // Эвристика RAM-disk: путь в tmpfs или безумно быстрый write (>3000) + fsync ~0
+    
     let on_tmpfs = is_tmpfs_path(&path);
     let looks_like_ramdisk = on_tmpfs
         || (write_mbps.unwrap_or(0.0) > 3500.0
@@ -149,7 +149,7 @@ fn file_checksum(path: &PathBuf, mb: usize, seed: u64) -> std::io::Result<u64> {
     let mut hash = seed;
     for i in 0..mb {
         f.read_exact(&mut buf)?;
-        // быстрый checksum
+        
         for (j, chunk) in buf.chunks_exact(8).enumerate() {
             let mut a = [0u8; 8];
             a.copy_from_slice(chunk);
@@ -181,16 +181,10 @@ fn verify_file_checksum(
     mb: usize,
     seed: u64,
 ) -> std::io::Result<(bool, u64, u64)> {
-    // убеждаемся что данные сброшены
+    
     {
         let f = OpenOptions::new().write(true).open(path)?;
         f.sync_all()?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("sh")
-            .args(["-c", "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null"])
-            .status();
     }
     let exp = expected_checksum(mb, seed);
     let got = file_checksum(path, mb, seed)?;
@@ -198,7 +192,7 @@ fn verify_file_checksum(
 }
 
 fn work_file() -> PathBuf {
-    // предпочитаем /var/tmp (обычно диск), не /tmp (часто tmpfs)
+    
     let candidates = [
         PathBuf::from("/var/tmp"),
         PathBuf::from("."),
@@ -281,7 +275,7 @@ fn fsync_latency(path: &PathBuf, samples: u32) -> std::io::Result<(f64, u32)> {
     Ok((total_us / n as f64, n))
 }
 
-/// Random 4K reads — предпочитаем O_DIRECT, иначе drop_caches + buffered.
+
 fn random_read_4k(
     path: &PathBuf,
     size_mb: usize,
@@ -323,7 +317,7 @@ fn open_for_cold_read(path: &PathBuf, notes: &mut Vec<String>) -> std::io::Resul
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        // O_DIRECT (linux x86/arm common value)
+        
         const O_DIRECT: i32 = 0o40000;
         match OpenOptions::new()
             .read(true)
@@ -336,13 +330,10 @@ fn open_for_cold_read(path: &PathBuf, notes: &mut Vec<String>) -> std::io::Resul
             }
             Err(e) => {
                 notes.push(format!(
-                    "random 4K: O_DIRECT недоступен ({e}) — drop_caches + buffered"
+                    "random 4K: O_DIRECT недоступен ({e}) — буферизованное чтение; кэш может влиять на результат"
                 ));
             }
         }
-        let _ = std::process::Command::new("sh")
-            .args(["-c", "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null"])
-            .status();
     }
     #[cfg(not(target_os = "linux"))]
     {

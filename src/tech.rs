@@ -19,7 +19,7 @@ pub struct TechReport {
 pub struct TechCategory {
     pub name: String,
     pub items: Vec<TechItem>,
-    pub score: String, // full | partial | none
+    pub score: String, 
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,7 +31,7 @@ pub struct TechItem {
 
 struct FlagDef {
     id: &'static str,
-    /// альтернативные имена флага в /proc/cpuinfo
+    
     aliases: &'static [&'static str],
     title: &'static str,
 }
@@ -193,7 +193,7 @@ pub fn collect() -> TechReport {
     let is_arm = has(&["asimd"]) || has(&["neon"]);
 
     for cat in catalog() {
-        // ARM-категорию только на реальном ARM (не из-за x86 флага aes)
+        
         if cat.name.starts_with("ARM") {
             if !is_arm || is_x86 {
                 continue;
@@ -206,7 +206,7 @@ pub fn collect() -> TechReport {
             let present = has(f.aliases);
             if present {
                 present_n += 1;
-                // ключевые подсветки
+                
                 if matches!(
                     f.id,
                     "avx" | "avx2" | "avx512f" | "aes" | "sha_ni" | "vmx" | "svm"
@@ -237,7 +237,7 @@ pub fn collect() -> TechReport {
         });
     }
 
-    // Важные «дыры» для x86 серверов (constant_tsc в госте часто нет — не important)
+    
     let important = [
         ("sse4_2", &["sse4_2"][..], "SSE4.2"),
         ("avx", &["avx"][..], "AVX"),
@@ -263,25 +263,25 @@ pub fn collect() -> TechReport {
         notes.push("Флаг hypervisor=yes — это гостевая ВМ, не bare-metal".into());
         if !has(&["constant_tsc"]) {
             notes.push(
-                "Нет constant_tsc в госте — нормально для KVM; не доказательство подмены CPU".into(),
+                "Флаг constant_tsc не предоставлен гостевой системе".into(),
             );
         }
     }
     if has(&["avx512f"]) && !has(&["avx2"]) {
-        notes.push("Странно: AVX-512 без AVX2 — возможна порча/маска флагов".into());
+        notes.push("AVX-512 доступен, а флаг AVX2 отсутствует".into());
     }
     if has(&["avx2"]) && !has(&["avx"]) {
         notes.push("AVX2 без AVX — флаги выглядят повреждёнными".into());
     }
     if !has(&["aes"]) && has(&["avx2"]) {
-        notes.push("AVX2 есть, AES-NI нет — на серверных CPU подозрительно (маска?)".into());
+        notes.push("Доступен AVX2; флаг AES-NI отсутствует".into());
         missing_important.push("AES-NI (ожидался)".into());
     }
     if has(&["vmx"]) || has(&["svm"]) {
         notes.push("Гостю отдали VT-x/AMD-V — возможен nested virtualization".into());
     }
 
-    // Интересные сырые флаги (отсортированные), которые часто смотрят на VDS
+    
     let watch = [
         "avx", "avx2", "avx512f", "avx512dq", "avx512bw", "avx512vl", "avx512_vnni",
         "aes", "sha_ni", "sha", "pclmulqdq", "rdrand", "rdseed", "bmi1", "bmi2", "adx",
@@ -336,7 +336,7 @@ fn detect_gen_hint(flags: &BTreeSet<String>) -> String {
     if h("amx_tile") {
         "Intel Sapphire Rapids+ / похожий класс".into()
     } else if h("avx_vnni") && h("avx512_bf16") {
-        // Zen5 часто: AVX-VNNI + AVX512-BF16 без AMX
+        
         "Zen5 / Zen4 desktop или Ice Lake+ (AVX-VNNI + BF16)".into()
     } else if h("avx512_bf16") || h("avx512bf16") {
         "Ice Lake / Cooper Lake / Zen4+ (AVX512-BF16)".into()
@@ -371,11 +371,11 @@ fn read_all_flags() -> BTreeSet<String> {
                             set.insert(f.to_lowercase());
                         }
                     }
-                    break; // достаточно первого CPU
+                    break; 
                 }
             }
         }
-        // lscpu -J / Flags line
+        
         if set.is_empty() {
             if let Ok(out) = std::process::Command::new("lscpu").output() {
                 let s = String::from_utf8_lossy(&out.stdout);
@@ -394,7 +394,7 @@ fn read_all_flags() -> BTreeSet<String> {
 
     #[cfg(target_os = "windows")]
     {
-        // Через PowerShell CIM — ограниченно, но хоть что-то
+        
         if let Ok(out) = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
@@ -410,7 +410,7 @@ fn read_all_flags() -> BTreeSet<String> {
     set
 }
 
-/// Быстрые булевы проверки для truth/oversell.
+
 pub fn has_flag(report: &TechReport, id: &str) -> bool {
     report
         .categories

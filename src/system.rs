@@ -52,7 +52,7 @@ pub fn collect() -> SystemInfo {
     let mut disks = Vec::new();
     for d in disks_sys.list() {
         let mount = d.mount_point().to_string_lossy().to_string();
-        // На Linux VDS обычно интересны /, /home, /var — пропускаем крошечные tmpfs
+        
         let total = d.total_space();
         if total < 512 * 1024 * 1024 {
             continue;

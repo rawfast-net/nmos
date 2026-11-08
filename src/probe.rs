@@ -273,7 +273,7 @@ fn read_topology() -> Topology {
     }
     packages.sort();
 
-    // threads/cores из cpu0 topology
+    
     let thread_siblings = fs::read_to_string(
         "/sys/devices/system/cpu/cpu0/topology/thread_siblings_list",
     )
@@ -289,7 +289,7 @@ fn read_topology() -> Topology {
             .max(1)
     });
 
-    // грубо: cores in package from core_siblings / threads
+    
     let cores_per_socket = match (&core_siblings, threads_per_core) {
         (Some(cs), Some(t)) if t > 0 => {
             let n = parse_cpu_list_count(cs.trim());
@@ -329,11 +329,11 @@ fn parse_cpu_list_count(s: &str) -> usize {
 
 #[cfg(target_os = "linux")]
 fn read_turbo() -> Option<bool> {
-    // Intel
+    
     if let Ok(v) = fs::read_to_string("/sys/devices/system/cpu/intel_pstate/no_turbo") {
         return Some(v.trim() == "0");
     }
-    // AMD cpufreq boost
+    
     if let Ok(v) = fs::read_to_string("/sys/devices/system/cpu/cpufreq/boost") {
         return Some(v.trim() == "1");
     }
@@ -348,10 +348,10 @@ fn read_cgroup() -> CgroupLimits {
         ..Default::default()
     };
 
-    // cgroup v2?
+    
     if Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
         out.version = Some("v2".into());
-        // текущий cgroup процесса
+        
         let cg_path = current_cgroup_v2_path();
         if let Some(ref base) = cg_path {
             let cpu_max = fs::read_to_string(format!("{base}/cpu.max")).ok();
@@ -396,7 +396,7 @@ fn read_cgroup() -> CgroupLimits {
         }
     } else if Path::new("/sys/fs/cgroup/cpu").exists() {
         out.version = Some("v1".into());
-        // упрощённо: /sys/fs/cgroup/cpu/cpu.cfs_quota_us
+        
         let quota = read_first_line("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
             .and_then(|s| s.parse::<i64>().ok());
         let period = read_first_line("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
@@ -411,7 +411,7 @@ fn read_cgroup() -> CgroupLimits {
         }
         if let Ok(mem) = fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes") {
             if let Ok(b) = mem.trim().parse::<u64>() {
-                // огромный лимит = «без лимита»
+                
                 if b < (1u64 << 60) {
                     out.memory_max_mb = Some(b / 1024 / 1024);
                 }
@@ -428,7 +428,7 @@ fn read_cgroup() -> CgroupLimits {
 #[cfg(target_os = "linux")]
 fn current_cgroup_v2_path() -> Option<String> {
     let cg = fs::read_to_string("/proc/self/cgroup").ok()?;
-    // формат v2: 0::/user.slice/...
+    
     for line in cg.lines() {
         if let Some(path) = line.strip_prefix("0::") {
             let path = path.trim();
@@ -496,7 +496,7 @@ fn read_mem_detail() -> MemDetail {
 #[cfg(target_os = "linux")]
 fn read_virtio(evidence: &mut Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
-    // /sys/bus/virtio/devices
+    
     if let Ok(entries) = fs::read_dir("/sys/bus/virtio/devices") {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
@@ -510,7 +510,7 @@ fn read_virtio(evidence: &mut Vec<String>) -> Vec<String> {
     if !out.is_empty() {
         evidence.push(format!("virtio устройств: {}", out.len()));
     }
-    // pci vendor hints
+    
     if let Ok(outp) = Command::new("lspci").arg("-nn").output() {
         let s = String::from_utf8_lossy(&outp.stdout);
         for key in ["Virtio", "QEMU", "Red Hat", "Xen", "VMware", "Amazon", "Google"] {
@@ -544,7 +544,7 @@ fn read_block_devices() -> Vec<BlockDev> {
         let rota = fs::read_to_string(e.path().join("queue/rotational"))
             .ok()
             .map(|s| s.trim() == "1");
-        // virtio/vd*/xvd* часто врёт rotational=1 при SSD/NVMe на хосте
+        
         let rota = if name.starts_with("vd")
             || name.starts_with("xvd")
             || name.starts_with("nvme")
@@ -563,7 +563,7 @@ fn read_block_devices() -> Vec<BlockDev> {
         let sched = fs::read_to_string(e.path().join("queue/scheduler"))
             .ok()
             .map(|s| {
-                // [mq-deadline] none
+                
                 s.split_whitespace()
                     .find(|x| x.starts_with('[') && x.ends_with(']'))
                     .map(|x| x.trim_matches(|c| c == '[' || c == ']').to_string())

@@ -1,0 +1,75 @@
+name: Build Linux binary
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          VERSION="$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; p=json.load(sys.stdin); print(next(x["version"] for x in p["packages"] if x["name"] == "nmos"))')"
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Тег не совпадает с версией в Cargo.toml" >&2
+            exit 1
+          fi
+      - run: node --test scripts/moderate.test.mjs
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - run: |
+          bash -n install.sh
+          cat install.sh | bash -s -- --help
+          target/release/nmos --monitor --monitor-count 1 --monitor-interval 1 > monitor.jsonl
+          target/release/nmos --offline --skip-stress --skip-speed --skip-disk --skip-mem --db-bench --db-dir /tmp --db-mb 1 --db-operations 20 --json > report.json
+          python3 -c 'import json; r=json.load(open("report.json")); assert r["db_bench"]["result"]["four_writers"]["completed"] == 20; assert "trust" not in r'
+      - run: |
+          cp target/release/nmos nmos-linux-x86_64
+          cp install.sh install-release.sh
+          sha256sum nmos-linux-x86_64 > nmos-linux-x86_64.sha256
+          sha256sum --check nmos-linux-x86_64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nmos-linux-x86_64
+          path: |
+            nmos-linux-x86_64
+            nmos-linux-x86_64.sha256
+            install-release.sh
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: nmos-linux-x86_64
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha256sum --check nmos-linux-x86_64.sha256
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft > release-status.txt 2>/dev/null; then
+            if [[ "$(cat release-status.txt)" != 'true' ]]; then
+              echo 'Опубликованный релиз уже существует' >&2
+              exit 1
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" nmos-linux-x86_64 nmos-linux-x86_64.sha256 install-release.sh --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false

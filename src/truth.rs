@@ -47,10 +47,17 @@ pub fn analyze(
             severity: "info".into(),
             code: "catalog_match".into(),
             message: format!(
-                "Паспорт «{}» → каталог: {} ({})",
+                "Модель «{}» → каталог: {} ({})",
                 cpu.model, c.name, c.gen
             ),
         });
+        if c.expected_st.is_none() {
+            findings.push(Finding {
+                severity: "info".into(),
+                code: "catalog_no_benchmark".into(),
+                message: "Для этой модели нет эталонного результата nmos".into(),
+            });
+        }
     } else {
         findings.push(Finding {
             severity: "warn".into(),
@@ -60,9 +67,9 @@ pub fn analyze(
         trust -= 5.0;
     }
 
-    let (expected_st, measured_st, st_ratio) = if let (Some(c), Some(s)) = (matched, stress) {
+    let (expected_st, measured_st, st_ratio) = if let (Some(c), Some(s)) = (matched.filter(|c| c.expected_st.is_some()), stress) {
         let guest_tax = if cpu.virtualization.is_virtual { 0.82 } else { 1.0 };
-        let expect = c.expected_st * guest_tax;
+        let expect = c.expected_st.unwrap_or_default() * guest_tax;
         let ratio = s.score_single / expect.max(1.0);
         check_perf(c, s, guest_tax, &mut findings, &mut trust);
         (Some(expect), Some(s.score_single), Some(ratio))
@@ -72,7 +79,7 @@ pub fn analyze(
         findings.push(Finding {
             severity: "warn".into(),
             code: "no_stress".into(),
-            message: "Без стресс-теста нельзя надёжно проверить враньё по CPU".into(),
+            message: "Без стресс-теста нет данных о производительности CPU".into(),
         });
         trust -= 15.0;
         (None, None, None)
@@ -120,7 +127,7 @@ pub fn analyze(
         findings.push(Finding {
             severity: "warn".into(),
             code: "generic_model".into(),
-            message: "Обезличенное имя CPU — реальный кремний скрыт".into(),
+            message: "Модель CPU не указана гостевой системой".into(),
         });
         trust -= 10.0;
     }
@@ -174,7 +181,7 @@ pub fn analyze(
         }
     }
 
-    // Дедуп: один слабый ST не должен трижды убить Trust
+    
     dedupe_st_stack(&mut findings, &mut trust);
 
     trust = trust.clamp(0.0, 100.0);
@@ -201,7 +208,7 @@ fn check_perf(
     findings: &mut Vec<Finding>,
     trust: &mut f64,
 ) {
-    let expect = c.expected_st * guest_tax;
+    let expect = c.expected_st.unwrap_or_default() * guest_tax;
     let ratio = s.score_single / expect.max(1.0);
     let low = 1.0 - c.tol_low;
     let tax_note = if guest_tax < 1.0 { " (VM-tax)" } else { "" };
@@ -211,7 +218,7 @@ fn check_perf(
             severity: "critical".into(),
             code: "cpu_lie_severe".into(),
             message: format!(
-                "ST {:.0} vs ожидание {:.0}{tax_note} для {} (ratio {:.0}%) — паспорт врёт или ядро сильно режут",
+                "ST {:.0} vs ожидание {:.0}{tax_note} для {} (ratio {:.0}%) — результат ниже ориентира; причина не установлена",
                 s.score_single, expect, c.name, ratio * 100.0
             ),
         });
@@ -221,7 +228,7 @@ fn check_perf(
             severity: "critical".into(),
             code: "cpu_underspec".into(),
             message: format!(
-                "ST {:.0} ниже нормы {:.0}{tax_note} для {} (ratio {:.0}%) — oversell/подмена",
+                "ST {:.0} ниже эталона {:.0}{tax_note} для {} (ratio {:.0}%); причины неоднозначны",
                 s.score_single, expect, c.name, ratio * 100.0
             ),
         });
@@ -249,21 +256,19 @@ fn check_perf(
 
     if s.scaling_efficiency < 50.0 {
         findings.push(Finding {
-            severity: "critical".into(),
+            severity: "warn".into(),
             code: "mt_contention".into(),
             message: format!(
-                "MT scaling {:.0}% — ядра делят между соседями",
+                "MT scaling {:.0}% — низкое масштабирование; причины неоднозначны",
                 s.scaling_efficiency
             ),
         });
-        *trust -= 20.0;
     } else if s.scaling_efficiency < 70.0 {
         findings.push(Finding {
             severity: "warn".into(),
             code: "mt_soft".into(),
-            message: format!("MT scaling {:.0}% — возможен shared CPU", s.scaling_efficiency),
+            message: format!("MT scaling {:.0}% — сниженное масштабирование", s.scaling_efficiency),
         });
-        *trust -= 10.0;
     }
 }
 
@@ -313,7 +318,7 @@ fn check_flags(
             findings.push(Finding {
                 severity: "critical".into(),
                 code: "flags_missing_aes".into(),
-                message: "Нет AES-NI при современном CPU — флаги урезаны/подмена".into(),
+                message: "Нет AES-NI при современном CPU — флаги не представлены гостевой системе".into(),
             });
             *trust -= 25.0;
         }
@@ -346,7 +351,7 @@ fn check_flags(
             findings.push(Finding {
                 severity: "warn".into(),
                 code: "flags_missing_fma".into(),
-                message: format!("Нет FMA3 при «{}» — подозрительно для этого поколения", c.gen),
+                message: format!("Флаг FMA3 отсутствует для модели «{}»", c.gen),
             });
             *trust -= 10.0;
         }
@@ -367,7 +372,7 @@ fn check_flags(
         }
     }
 
-    // SHA-NI: Zen2+, Goldmont+, Cannon Lake+
+    
     if (gen.contains("zen2")
         || gen.contains("zen3")
         || gen.contains("zen4")
@@ -386,12 +391,12 @@ fn check_flags(
         findings.push(Finding {
             severity: "warn".into(),
             code: "flags_missing_sha".into(),
-            message: format!("Нет SHA-NI при «{}» — часто маскируют на shared VPS", c.gen),
+            message: format!("Флаг SHA-NI отсутствует для «{}»", c.gen),
         });
         *trust -= 8.0;
     }
 
-    // AVX-512: Zen4/Zen5 desktop+server, Ice Lake SP, SPR
+    
     let expects_avx512 = gen.contains("zen4")
         || gen.contains("zen5")
         || gen.contains("genoa")
@@ -400,7 +405,7 @@ fn check_flags(
         || (gen.contains("ice lake") && (c.name.contains("Xeon") || c.name.contains("EPYC")))
         || gen.contains("sapphire")
         || gen.contains("emerald");
-    // Desktop Zen4/5 тоже имеют AVX-512 (в отличие от Intel client)
+    
     let zen_desktop_avx512 = (gen.contains("zen4") || gen.contains("zen5"))
         && (c.name.contains("Ryzen") || c.name.contains("EPYC") || c.name.contains("Threadripper"));
     if (expects_avx512 || zen_desktop_avx512) && !has("avx512f") {
@@ -409,20 +414,20 @@ fn check_flags(
             severity: if guest { "warn".into() } else { "critical".into() },
             code: "flags_no_avx512".into(),
             message: format!(
-                "Паспорт «{}» ({}) обычно с AVX-512 — флага нет{}",
+                "Модель «{}» ({}): флаг AVX-512 отсутствует{}",
                 c.name,
                 c.gen,
                 if guest {
-                    " (в облаке часто маскируют — не доказательство подмены)"
+                    " (возможна маскировка гипервизором)"
                 } else {
-                    " — mask/подмена"
+                    " — возможно маскирование"
                 }
             ),
         });
         *trust -= if guest { 6.0 } else { 18.0 };
     }
 
-    // Intel client (Alder/Raptor) НЕ должен иметь AVX-512 в госте обычно — если вдруг есть и имя старое, ок
+    
     if (gen.contains("alder") || gen.contains("raptor") || gen.contains("arrow"))
         && c.name.contains("Core")
         && has("avx512f")
@@ -430,11 +435,11 @@ fn check_flags(
         findings.push(Finding {
             severity: "info".into(),
             code: "flags_avx512_on_client".into(),
-            message: "AVX-512 на Intel client — необычно (часто отключён); возможно серверный кремний под desktop-именем".into(),
+            message: "Флаг AVX-512 доступен при указанной модели CPU".into(),
         });
     }
 
-    // Несовпадение ISA hint с заявленным поколением
+    
     if tech.available {
         let isa = tech.isa_level.to_lowercase();
         if gen.contains("zen3") || gen.contains("zen4") || gen.contains("zen5") || gen.contains("alder") || gen.contains("raptor")
@@ -444,7 +449,7 @@ fn check_flags(
                     severity: "critical".into(),
                     code: "isa_too_old".into(),
                     message: format!(
-                        "Заявлено {}, а ISA гостя: {} — технологии не соответствуют паспорту",
+                        "Модель {}, набор инструкций гостевой системы: {}",
                         c.gen, tech.isa_level
                     ),
                 });
@@ -473,7 +478,7 @@ fn check_flags(
     }
 }
 
-/// Отпечаток: vendor, L3, ядра в имени, svm/vmx, ST vs ISA.
+
 fn check_cpu_fingerprint(
     cpu: &CpuInfo,
     c: &CatalogCpu,
@@ -501,7 +506,7 @@ fn check_cpu_fingerprint_unknown(
 ) {
     check_vendor_vs_name(cpu, findings, trust);
     check_virt_ext_vs_vendor(cpu, tech, findings, trust);
-    // ядра из имени без каталога
+    
     if let Some(named) = parse_cores_from_model(&cpu.model) {
         if cpu.logical_cores > 0 && named > cpu.logical_cores * 2 {
             findings.push(Finding {
@@ -512,7 +517,7 @@ fn check_cpu_fingerprint_unknown(
                 },
                 code: "named_cores_slice".into(),
                 message: format!(
-                    "В имени «{}-Core», а гостю дали {} лог. — типичный vCPU-slice",
+                    "В названии указано {} ядер; гостевой системе доступно {} логических процессоров",
                     named, cpu.logical_cores
                 ),
             });
@@ -534,7 +539,7 @@ fn check_vendor_vs_name(cpu: &CpuInfo, findings: &mut Vec<Finding>, trust: &mut 
             severity: "critical".into(),
             code: "vendor_lie_amd_on_intel".into(),
             message: format!(
-                "Имя «{}», а vendor={} — подмена model name",
+                "Имя «{}», а vendor={} — расхождение в данных CPU",
                 cpu.model, cpu.vendor
             ),
         });
@@ -544,7 +549,7 @@ fn check_vendor_vs_name(cpu: &CpuInfo, findings: &mut Vec<Finding>, trust: &mut 
             severity: "critical".into(),
             code: "vendor_lie_intel_on_amd".into(),
             message: format!(
-                "Имя «{}», а vendor={} — подмена model name",
+                "Имя «{}», а vendor={} — расхождение в данных CPU",
                 cpu.model, cpu.vendor
             ),
         });
@@ -581,7 +586,7 @@ fn check_virt_ext_vs_vendor(
 
 fn parse_cores_from_model(model: &str) -> Option<usize> {
     let m = model.to_lowercase();
-    // "16-Core Processor", "16 Core(s)"
+    
     for (i, _) in m.match_indices("-core") {
         let prefix = &m[..i];
         let num: String = prefix
@@ -619,7 +624,7 @@ fn check_named_cores(
             severity: sev.into(),
             code: "vcpu_slice".into(),
             message: format!(
-                "Паспорт ≈{named} ядер (каталог {}), гостю {} лог. — это slice, не весь CPU",
+                "В названии указано {named} ядер (каталог {}); гостевой системе доступно {} логических процессоров",
                 c.name, logical
             ),
         });
@@ -643,7 +648,7 @@ fn check_l3_vs_catalog(
     let name = c.name.to_lowercase();
     let guest = cpu.virtualization.is_virtual;
 
-    // В госте L3 — кусок LLC хоста; не требуем полный desktop/EPYC объём
+    
     let min_mb = if guest {
         if name.contains("epyc") || name.contains("xeon") || name.contains("ryzen 9") {
             8.0
@@ -672,11 +677,11 @@ fn check_l3_vs_catalog(
             severity: if guest { "info".into() } else { "warn".into() },
             code: "l3_too_small".into(),
             message: format!(
-                "L3 ≈ {l3_mb:.0} MB при паспорте {} (ориентир ≥{:.0} MB){}",
+                "L3 ≈ {l3_mb:.0} MB для модели {} (ориентир ≥{:.0} MB){}",
                 c.name,
                 min_mb,
                 if guest {
-                    " — в VDS часто виден только slice LLC"
+                    " — гостевой системе может быть доступна часть кэша"
                 } else {
                     " — shared LLC / урезанный"
                 }
@@ -717,21 +722,21 @@ fn check_st_vs_isa(
         || tech.isa_level.to_lowercase().contains("v3")
         || crate::tech::has_flag(tech, "avx512f");
 
-    // Современный ISA + слабенький ST как у Atom → враньё/жёсткий cap
+    
     if modern_isa && s.score_single < 45.0 && (gen.contains("zen") || gen.contains("alder") || gen.contains("raptor") || gen.contains("ice") || gen.contains("sapphire"))
     {
         findings.push(Finding {
             severity: "critical".into(),
             code: "isa_st_mismatch".into(),
             message: format!(
-                "ISA современный ({}), а ST всего {:.0} — CPU душат квотой/соседями или паспорт фейк",
+                "ISA современный ({}), а ST всего {:.0} — результат ниже ориентира; причина не установлена",
                 tech.isa_level, s.score_single
             ),
         });
         *trust -= 20.0;
     }
 
-    // Старый E5 в имени, но ST как у Zen4 + AVX512 → переименовали хост
+    
     if (gen.contains("ivy") || gen.contains("haswell") || gen.contains("broadwell"))
         && crate::tech::has_flag(tech, "avx512f")
         && s.score_single > 90.0
@@ -740,7 +745,7 @@ fn check_st_vs_isa(
             severity: "critical".into(),
             code: "old_name_new_silicon".into(),
             message: format!(
-                "Паспорт «{}» ({}), но есть AVX-512 и ST {:.0} — имя устаревшее, кремний новее (или наоборот врут в тарифе)",
+                "Модель «{}» ({}), AVX-512 доступен, ST {:.0}; данные отличаются от каталога",
                 c.name, c.gen, s.score_single
             ),
         });
@@ -764,13 +769,13 @@ fn check_cpuid_vs_catalog(
     let v = cpu.vendor.to_lowercase();
 
     if v.contains("amd") || v.contains("authenticamd") {
-        // Zen5 = family 0x1A (26), Zen3/4 = 0x19 (25), Zen2 = 0x17 (23)
+        
         if gen.contains("zen5") && family != 0x1A {
             findings.push(Finding {
                 severity: "critical".into(),
                 code: "cpuid_family_mismatch".into(),
                 message: format!(
-                    "Каталог Zen5, но CPUID family={family:#x} (ждали 1Ah) — подмена имени",
+                    "Каталог Zen5, но CPUID family={family:#x} (ждали 1Ah) — расхождение в данных CPU",
                 ),
             });
             *trust -= 30.0;
@@ -778,13 +783,13 @@ fn check_cpuid_vs_catalog(
             && family != 0x19
             && family != 0x1A
         {
-            // Zen4 desktop иногда 19h; Zen5 Turin 1Ah — если каталог zen4 а family 17h — плохо
+            
             if family == 0x17 || family < 0x17 {
                 findings.push(Finding {
                     severity: "critical".into(),
                     code: "cpuid_family_old".into(),
                     message: format!(
-                        "Паспорт «{}», CPUID family={family:#x} — слишком старое поколение для каталога",
+                        "Модель «{}», CPUID family={family:#x} — данные отличаются от каталога",
                         c.name
                     ),
                 });
@@ -826,7 +831,7 @@ fn check_cpuid_vs_catalog(
                     severity: "warn".into(),
                     code: "intel_model_id_mismatch".into(),
                     message: format!(
-                        "Паспорт gen «{}», CPUID model={model:#x} — возможно другое поколение",
+                        "Поколение «{}», CPUID model={model:#x} — данные могут отличаться",
                         c.gen
                     ),
                 });
@@ -845,7 +850,7 @@ fn check_tech_standalone(
         return;
     }
     for n in &tech.notes {
-        if n.contains("подозрительно") || n.contains("Странно") || n.contains("поврежд") {
+        if n.contains("подозрительно") || n.contains("AVX-512 доступен, а флаг AVX2 отсутствует") || n.contains("поврежд") {
             findings.push(Finding {
                 severity: "warn".into(),
                 code: "tech_anomaly".into(),
@@ -871,10 +876,10 @@ fn check_frequency(
             severity: if guest { "info".into() } else { "warn".into() },
             code: "no_cpufreq".into(),
             message: if guest {
-                "Нет cpufreq в госте — частота в паспорте не доказательство CPU (норма для KVM)"
+                "Нет cpufreq в гостевой системе; частота может быть недоступна"
                     .into()
             } else {
-                "Нет cpufreq — частота в паспорте НЕ доказательство реального CPU".into()
+                "Нет cpufreq; частота процессора не подтверждена".into()
             },
         });
         if !guest {
@@ -892,9 +897,9 @@ fn check_frequency(
                 cpu.freq_mhz_max,
                 cpu.freq_mhz_current_avg,
                 if guest {
-                    "типичный паспорт гипервизора, не замер кремния"
+                    "значение, представленное гипервизором"
                 } else {
-                    "подозрительно для bare-metal"
+                    "источник частоты не обнаружен"
                 }
             ),
         });
@@ -936,8 +941,8 @@ fn check_frequency(
         }
     }
 
-    // Под нагрузкой частота должна хоть чуть меняться на реальном железе с turbo;
-    // на VDS часто idle==load==3000.
+    
+    
     if let Some(s) = stress {
         if let (Some(idle), Some(load)) = (s.freq_idle_mhz, s.freq_load_mhz) {
             let delta = (load - idle).abs();
@@ -968,7 +973,7 @@ fn check_frequency(
             });
         }
 
-        // Если паспорт говорит ~3 GHz современного CPU, а ST слабый — враньё
+        
         if let Some(mhz) = cpu.freq_mhz_max.or(cpu.freq_mhz_reported) {
             if mhz >= 2800 {
                 let expected_floor = if cpu.model.to_lowercase().contains("epyc")
@@ -983,7 +988,7 @@ fn check_frequency(
                         severity: "critical".into(),
                         code: "freq_perf_mismatch".into(),
                         message: format!(
-                            "Паспорт ≈{mhz} МГц, но ST всего {:.0} — частота не соответствует производительности",
+                            "Указанная частота ≈{mhz} МГц; результат ST {:.0} ниже ориентира",
                             s.score_single
                         ),
                     });
@@ -1068,7 +1073,7 @@ fn check_virt(cpu: &CpuInfo, deep: &DeepProbe, findings: &mut Vec<Finding>, trus
             findings.push(Finding {
                 severity: "warn".into(),
                 code: "steal_mid".into(),
-                message: format!("CPU steal {steal:.1}% — oversell на ноде"),
+                message: format!("CPU steal {steal:.1}% — задержка vCPU за интервал замера"),
             });
             *trust -= 12.0;
         }
@@ -1111,7 +1116,7 @@ fn check_memory(sys: &SystemInfo, deep: &DeepProbe, findings: &mut Vec<Finding>,
         findings.push(Finding {
             severity: "critical".into(),
             code: "ram_tiny".into(),
-            message: format!("Всего {} MB RAM — подозрительно мало", sys.ram_total_mb),
+            message: format!("Объём RAM: {} MB", sys.ram_total_mb),
         });
         *trust -= 15.0;
     }
@@ -1123,7 +1128,7 @@ fn check_disk(io: &DiskIoResult, findings: &mut Vec<Finding>, trust: &mut f64) {
             findings.push(Finding {
                 severity: "warn".into(),
                 code: "disk_slow_write".into(),
-                message: format!("Запись ≈ {w:.0} MB/s — медленный диск / IO oversell"),
+                message: format!("Запись ≈ {w:.0} MB/s — низкая скорость записи в этом тесте"),
             });
             *trust -= 10.0;
         } else if w >= 400.0 {
@@ -1160,7 +1165,7 @@ fn verdict_from(trust: f64, findings: &[Finding]) -> (String, String) {
                 | "openvz_like"
         )
     });
-    // Soft critical (AVX512 mask, L3 slice) не тянут весь вердикт в suspect
+    
     let hard_critical = findings.iter().any(|f| {
         f.severity == "critical"
             && !matches!(
@@ -1171,22 +1176,22 @@ fn verdict_from(trust: f64, findings: &[Finding]) -> (String, String) {
 
     if hard_lie || (hard_critical && trust < 40.0) {
         (
-            "ПРОВАЙДЕР СКОРЕЕ ВРЁТ / СИЛЬНО РЕЖЕТ РЕСУРСЫ".into(),
+            "Обнаружены отклонения измерений от ориентиров".into(),
             "lie".into(),
         )
     } else if trust < 55.0 || (hard_critical && trust < 70.0) {
         (
-            "ПОДОЗРИТЕЛЬНО — признаки oversell/подмены".into(),
+            "Обнаружены отклонения от ориентиров".into(),
             "suspect".into(),
         )
     } else if trust < 80.0 {
         ("В целом похоже на правду, с оговорками".into(), "ok".into())
     } else {
-        ("Паспорт в целом честный".into(), "ok".into())
+        ("Существенных отклонений от ориентиров не обнаружено".into(), "ok".into())
     }
 }
 
-/// Если уже есть cpu_underspec/lie — не копим isa_st + freq_perf как отдельные −20/−25.
+
 fn dedupe_st_stack(findings: &mut Vec<Finding>, trust: &mut f64) {
     let has_main = findings.iter().any(|f| {
         matches!(

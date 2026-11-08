@@ -32,7 +32,7 @@ impl ProviderClaims {
 #[derive(Debug, Clone, Serialize)]
 pub struct ChecklistItem {
     pub area: String,
-    pub status: String, // pass | warn | fail | skip
+    pub status: String, 
     pub detail: String,
 }
 
@@ -200,7 +200,7 @@ pub fn build(
             "info"
         };
         checklist.push(item("CPU fingerprint", st, f.message.clone()));
-        // don't double-count against trust verdict
+        
         if !matches!(truth.verdict_level.as_str(), "lie" | "suspect") {
             if st == "fail" {
                 score -= 10.0;
@@ -212,16 +212,16 @@ pub fn build(
 
     match truth.verdict_level.as_str() {
         "lie" => {
-            checklist.push(item("CPU честность", "fail", truth.verdict.clone()));
+            checklist.push(item("CPU: сравнение с ориентиром", "fail", truth.verdict.clone()));
             score -= 30.0;
         }
         "suspect" => {
-            checklist.push(item("CPU честность", "warn", truth.verdict.clone()));
+            checklist.push(item("CPU: сравнение с ориентиром", "warn", truth.verdict.clone()));
             score -= 12.0;
         }
         _ => {
             checklist.push(item(
-                "CPU честность",
+                "CPU: сравнение с ориентиром",
                 "pass",
                 format!("Trust {:.0}/100 · {}", truth.trust_score, truth.verdict),
             ));
@@ -232,17 +232,15 @@ pub fn build(
         if s.scaling_efficiency < 55.0 {
             checklist.push(item(
                 "CPU scaling",
-                "fail",
-                format!("{:.0}% — сильный oversell/соседи", s.scaling_efficiency),
+                "warn",
+                format!("{:.0}% — низкое масштабирование; причины неоднозначны", s.scaling_efficiency),
             ));
-            score -= 15.0;
         } else if s.scaling_efficiency < 75.0 {
             checklist.push(item(
                 "CPU scaling",
                 "warn",
-                format!("{:.0}% — возможен shared", s.scaling_efficiency),
+                format!("{:.0}% — сниженное масштабирование", s.scaling_efficiency),
             ));
-            score -= 7.0;
         } else {
             checklist.push(item(
                 "CPU scaling",
@@ -321,21 +319,21 @@ pub fn build(
 
     if let Some(m) = mem {
         if !m.alloc_ok {
-            checklist.push(item("RAM реальность", "fail", "не удалось выделить тестовый буфер".into()));
+            checklist.push(item("Проверка RAM", "fail", "не удалось выделить тестовый буфер".into()));
             score -= 20.0;
         } else if m.verify_ok == Some(false) {
-            checklist.push(item("RAM реальность", "fail", "паттерн повреждён — память врёт".into()));
+            checklist.push(item("Проверка RAM", "fail", "паттерн повреждён — ошибка проверки памяти".into()));
             score -= 30.0;
         } else {
             let bw = m.write_gbps.map(|v| format!("{v:.1} GB/s")).unwrap_or_else(|| "—".into());
             checklist.push(item(
-                "RAM реальность",
+                "Проверка RAM",
                 "pass",
                 format!("verify OK · {} MB · write {bw}", m.tested_mb),
             ));
         }
         if let Some(ref b) = m.balloon_hint {
-            // balloon driver is normal on KVM — info only
+            
             checklist.push(item("RAM balloon", "info", b.clone()));
         }
         if let Some(ref s) = m.swap_abuse_hint {
@@ -343,7 +341,7 @@ pub fn build(
             score -= 5.0;
         }
     } else {
-        checklist.push(item("RAM реальность", "skip", "memcheck пропущен".into()));
+        checklist.push(item("Проверка RAM", "skip", "memcheck пропущен".into()));
     }
 
     let root_gb = sys
@@ -389,7 +387,7 @@ pub fn build(
             checklist.push(item(
                 "Диск целостность",
                 "fail",
-                "checksum после fsync не совпал — диск/кэш врёт".into(),
+                "checksum после fsync не совпал — контрольная сумма не совпала".into(),
             ));
             score -= 30.0;
         } else if d.verify_ok == Some(true) {
@@ -476,7 +474,7 @@ pub fn build(
         checklist.push(item(
             "Виртуализация",
             "warn",
-            "не обнаружена явно — странно для VDS либо bare-metal".into(),
+            "виртуализация не определена".into(),
         ));
     }
 
@@ -586,7 +584,7 @@ pub fn build(
         }
     }
 
-    // Ключевые extras-находки из truth
+    
     for fnd in truth.findings.iter().filter(|f| {
         matches!(
             f.code.as_str(),
@@ -651,7 +649,7 @@ pub fn build(
     }
     if let Some(s) = stress {
         if s.scaling_efficiency < 70.0 {
-            advice.push("retest off-peak; if scaling stays low it's likely oversell".into());
+            advice.push("retest at different times; low scaling alone does not establish overselling".into());
         }
     }
     advice.push("trust=cpu passport; honesty=plan claims + checklist".into());
@@ -675,7 +673,7 @@ fn item(area: &str, status: &str, detail: String) -> ChecklistItem {
 }
 
 fn grade(score: f64, checklist: &[ChecklistItem]) -> (String, String) {
-    // soft fails (net/iops/extras) alone shouldn't force D/F
+    
     let hard_fails = checklist
         .iter()
         .filter(|c| {

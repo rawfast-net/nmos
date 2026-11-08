@@ -1,106 +1,63 @@
 #!/usr/bin/env bash
-# nmos — build & install on Linux VDS
-#   bash install.sh
-#   bash install.sh --run
-
 set -euo pipefail
 
-APP_NAME="nmos"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_URL="${NMOS_RELEASE_URL:-https://github.com/rawfast-net/nmos/releases/latest/download}"
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 RUN_AFTER=0
-OFFLINE_BUILD=0
 
 for arg in "$@"; do
   case "$arg" in
     --run) RUN_AFTER=1 ;;
-    --offline) OFFLINE_BUILD=1 ;;
-    -h|--help)
-      echo "Usage: bash install.sh [--run] [--offline]"
-      exit 0
-      ;;
+    -h|--help) printf 'Использование: bash install.sh [--run]\n'; exit 0 ;;
+    *) printf 'Неизвестный аргумент: %s\n' "$arg" >&2; exit 1 ;;
   esac
 done
 
-need_cmd() { command -v "$1" >/dev/null 2>&1; }
-
-echo "nmos install"
-
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "warn: target OS is Linux, current: $(uname -s)"
-fi
-
-install_pkgs() {
-  if [[ "$OFFLINE_BUILD" -eq 1 ]]; then
-    echo "skipping apt/dnf (--offline)"
-    return 0
-  fi
-
-  if need_cmd apt-get; then
-    export DEBIAN_FRONTEND=noninteractive
-    sudo apt-get update -y
-    sudo apt-get install -y curl ca-certificates build-essential gcc pkg-config iproute2 pciutils util-linux
-  elif need_cmd dnf; then
-    sudo dnf install -y curl ca-certificates gcc make pkgconf iproute pciutils util-linux
-  elif need_cmd yum; then
-    sudo yum install -y curl ca-certificates gcc make pkgconfig iproute pciutils util-linux
-  elif need_cmd apk; then
-    sudo apk add --no-cache curl ca-certificates build-base pkgconf iproute2 pciutils util-linux
-  else
-    echo "no apt/dnf/yum/apk — install gcc/curl yourself"
-  fi
-}
-
-if ! need_cmd curl; then
-  install_pkgs
-fi
-if ! need_cmd cc && ! need_cmd gcc; then
-  install_pkgs
-elif need_cmd sudo && [[ "$OFFLINE_BUILD" -eq 0 ]]; then
-  install_pkgs || true
-fi
-
-if ! need_cmd cargo; then
-  echo "installing rustup..."
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-  # shellcheck disable=SC1091
-  source "$HOME/.cargo/env"
-fi
-
-if ! need_cmd cargo; then
-  # shellcheck disable=SC1091
-  [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
-fi
-
-if ! need_cmd cargo; then
-  echo "cargo not found after rustup"
+if [[ "$(uname -s)" != Linux || "$(uname -m)" != x86_64 ]]; then
+  printf 'Готовая сборка доступна только для Linux x86_64.\n' >&2
   exit 1
 fi
 
-echo "rustc: $(rustc --version)"
-echo "building release..."
+for cmd in curl sha256sum install mktemp; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    printf 'Не найдена команда: %s\n' "$cmd" >&2
+    exit 1
+  fi
+done
 
-cd "$SRC_DIR"
-cargo build --release
-
-BIN="$SRC_DIR/target/release/$APP_NAME"
-if [[ ! -x "$BIN" ]]; then
-  echo "binary missing: $BIN"
-  exit 1
-fi
-
-echo "installing to $INSTALL_DIR ..."
-if [[ -w "$INSTALL_DIR" ]]; then
-  install -m 755 "$BIN" "$INSTALL_DIR/$APP_NAME"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
+if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/nmos-linux-x86_64" && -f "$SCRIPT_DIR/nmos-linux-x86_64.sha256" ]]; then
+  cp -- "$SCRIPT_DIR/nmos-linux-x86_64" "$TMP_DIR/nmos-linux-x86_64"
+  cp -- "$SCRIPT_DIR/nmos-linux-x86_64.sha256" "$TMP_DIR/nmos-linux-x86_64.sha256"
 else
-  sudo install -m 755 "$BIN" "$INSTALL_DIR/$APP_NAME"
+  printf 'Загрузка готовой сборки...\n'
+  for file in nmos-linux-x86_64 nmos-linux-x86_64.sha256; do
+    if ! curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 "$BASE_URL/$file" -o "$TMP_DIR/$file"; then
+      printf 'Не удалось загрузить %s. Проверьте наличие файлов в последнем релизе.\n' "$file" >&2
+      exit 1
+    fi
+  done
 fi
-
-echo "ok: $(command -v $APP_NAME || echo $INSTALL_DIR/$APP_NAME)"
-echo "  nmos"
-echo "  nmos -d 8"
-echo "  nmos --json"
-
+CHECKSUM="$(cat "$TMP_DIR/nmos-linux-x86_64.sha256")"
+if [[ ! "$CHECKSUM" =~ ^[0-9a-fA-F]{64}[[:space:]][[:space:]]nmos-linux-x86_64$ ]]; then
+  printf 'Некорректный файл контрольной суммы.\n' >&2
+  exit 1
+fi
+(cd "$TMP_DIR" && sha256sum --check nmos-linux-x86_64.sha256)
+if [[ -w "$INSTALL_DIR" ]]; then
+  install -m 755 "$TMP_DIR/nmos-linux-x86_64" "$INSTALL_DIR/nmos"
+elif command -v sudo >/dev/null 2>&1; then
+  sudo install -m 755 "$TMP_DIR/nmos-linux-x86_64" "$INSTALL_DIR/nmos"
+else
+  printf 'Нет прав для записи в %s. Запустите от root или задайте INSTALL_DIR.\n' "$INSTALL_DIR" >&2
+  exit 1
+fi
+printf 'Установлено: %s/nmos\n' "$INSTALL_DIR"
 if [[ "$RUN_AFTER" -eq 1 ]]; then
-  exec "$INSTALL_DIR/$APP_NAME" -d 5
+  exec "$INSTALL_DIR/nmos"
 fi

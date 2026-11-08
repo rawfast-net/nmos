@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Результаты проверки VDS с помощью nmos">
+  <title>nmos — результаты проверки VDS</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <header class="header">
+    <div class="container header-inner">
+      <a class="brand" href="./">nmos</a>
+      <nav aria-label="Навигация">
+        <a href="#results">Результаты</a>
+        <a href="#add">Добавить результат</a>
+        <a href="https://github.com/rawfast-net/nmos">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section id="results">
+      <h1>Результаты проверки VDS</h1>
+      <p class="intro">Результаты тестов, отправленные пользователями nmos.</p>
+      <div class="toolbar">
+        <label class="field search">Поиск
+          <input id="search" type="search" placeholder="Провайдер, процессор или регион">
+        </label>
+        <label class="field sort">Сортировка
+          <select id="sort">
+            <option value="newest">Сначала новые</option>
+            <option value="provider">По провайдеру</option>
+            <option value="cpu">По процессору</option>
+          </select>
+        </label>
+      </div>
+      <p class="result-count">Всего результатов: <strong id="result-count">—</strong></p>
+      <div id="status" class="status" role="status">Загрузка результатов…</div>
+      <div id="results-list" class="results-list"></div>
+      <p class="note">Результат относится к конкретному серверу и времени проверки. Сравнивайте тесты с одинаковой версией nmos и похожими условиями.</p>
+    </section>
+
+    <section id="add" class="information">
+      <h2>Как добавить результат</h2>
+      <p>Запустите nmos и согласитесь подготовить результат после проверки. Программа покажет данные и создаст ссылку на GitHub Issue. Проверьте текст и отправьте Issue вручную.</p>
+      <p>После проверки модератором результат появится на этой странице. Issue в публичном репозитории виден всем сразу после отправки.</p>
+      <a href="https://github.com/rawfast-net/nmos">Открыть проект на GitHub</a>
+    </section>
+  </main>
+  <footer class="container footer">nmos · Результаты пользователей</footer>
+</body>
+</html>

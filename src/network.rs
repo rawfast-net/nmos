@@ -10,7 +10,7 @@ pub struct NetworkInfo {
     pub default_route_guess: Option<String>,
     pub public_ip: Option<String>,
     pub geo_hint: Option<String>,
-    /// Фактически использованный регион speed/ping: ru | intl | all
+    
     pub resolved_region: String,
     pub dns_latency_ms: Option<f64>,
     pub latency_targets: Vec<LatencySample>,
@@ -59,7 +59,7 @@ pub struct NetOptions {
     pub fetch_public_ip: bool,
     pub run_speed: bool,
     pub speed_size_mb: u64,
-    /// auto | ru | intl | all
+    
     pub region: String,
 }
 
@@ -121,7 +121,7 @@ struct GeoInfo {
     country_code: Option<String>,
 }
 
-/// РФ / ближнее СНГ → Selectel (ru), иначе зарубежные зеркала (intl).
+
 fn resolve_region(requested: &str, country_code: Option<&str>, notes: &mut Vec<String>) -> String {
     let req = requested.to_lowercase();
     match req.as_str() {
@@ -138,7 +138,7 @@ fn resolve_region(requested: &str, country_code: Option<&str>, notes: &mut Vec<S
             "ru".into()
         }
         _ => {
-            // auto
+            
             if is_cis_ru(country_code) {
                 notes.push(format!(
                     "Авто-регион: ru (Selectel) — geo country={}",
@@ -152,7 +152,7 @@ fn resolve_region(requested: &str, country_code: Option<&str>, notes: &mut Vec<S
                 ));
                 "intl".into()
             } else {
-                // Без geo: пробуем по latency RU vs CF
+                
                 let ya = measure_tcp_host("ya.ru:443");
                 let cf = measure_tcp_host("1.1.1.1:443");
                 match (ya, cf) {
@@ -394,7 +394,7 @@ fn guess_default(ifaces: &[Iface]) -> Option<String> {
             } else if ip.starts_with("10.") || ip.starts_with("192.168.") || ip.starts_with("172.") {
                 s += 25;
             } else {
-                s += 50; // публичный — типично для VDS
+                s += 50; 
             }
         }
         s
@@ -426,7 +426,7 @@ fn fetch_public() -> Option<String> {
         }
     }
 
-    // Сначала РФ-дружественные / нейтральные эндпоинты
+    
     for args in [
         vec!["-4", "-fsS", "--max-time", "5", "https://ifconfig.me/ip"],
         vec!["-4", "-fsS", "--max-time", "5", "https://icanhazip.com"],
@@ -518,7 +518,7 @@ fn measure_latencies(region: &str) -> Vec<LatencySample> {
             v.extend(intl);
             v
         }
-        _ => ru.to_vec(), // ru по умолчанию
+        _ => ru.to_vec(), 
     };
 
     targets
@@ -550,13 +550,13 @@ fn run_speed_test(size_mb: u64, region: &str, notes: &mut Vec<String>) -> SpeedR
     let size_mb = size_mb.clamp(10, 500);
     notes.push(format!("Регион speed-теста: {region}"));
 
-    // Зарубежье: сначала банальный speedtest (Ookla / speedtest-cli)
+    
     if region == "intl" || region == "all" {
         if let Some(r) = try_banal_speedtest(notes) {
             if region == "intl" {
                 return r;
             }
-            // all: speedtest + Selectel ниже допишем
+            
             let mut combined = r;
             notes.push("ALL: + Selectel download".into());
             let sel = run_mirror_downloads(size_mb, "ru", notes);
@@ -686,22 +686,22 @@ fn run_mirror_downloads(size_mb: u64, region: &str, _notes: &mut Vec<String>) ->
     }
 }
 
-/// Классический speedtest.net: Ookla CLI (`speedtest`) или `speedtest-cli`.
+
 fn try_banal_speedtest(notes: &mut Vec<String>) -> Option<SpeedResult> {
     if let Some(r) = run_ookla_speedtest() {
-        notes.push("INTL: Ookla speedtest CLI (банальный speedtest.net)".into());
+        notes.push("INTL: Ookla speedtest CLI".into());
         return Some(r);
     }
     if let Some(r) = run_speedtest_cli() {
-        notes.push("INTL: speedtest-cli (банальный speedtest.net)".into());
+        notes.push("INTL: speedtest-cli".into());
         return Some(r);
     }
     None
 }
 
 fn run_ookla_speedtest() -> Option<SpeedResult> {
-    // Ookla: speedtest -f json --accept-license --accept-gdpr
-    // Не путать с python speedtest-cli (тот же бинарь `speedtest` на части систем)
+    
+    
     let probe = Command::new("speedtest")
         .args(["--version"])
         .output()
@@ -712,7 +712,7 @@ fn run_ookla_speedtest() -> Option<SpeedResult> {
         String::from_utf8_lossy(&probe.stderr)
     )
     .to_lowercase();
-    // Python CLI пишет "speedtest-cli" / Speedtest.net; Ookla — "Speedtest by Ookla"
+    
     let looks_ookla = ver.contains("ookla") || ver.contains("speedtest by");
     let looks_python = ver.contains("speedtest-cli") || ver.contains("python");
     if looks_python && !looks_ookla {
@@ -751,7 +751,7 @@ fn run_ookla_speedtest() -> Option<SpeedResult> {
         eprintln!("не Ookla JSON");
         return None;
     }
-    // Ookla JSON: download.bandwidth = bytes/sec → Mbps = *8/1e6
+    
     let down_bps = v.pointer("/download/bandwidth").and_then(|x| x.as_f64())?;
     let up_bps = v.pointer("/upload/bandwidth").and_then(|x| x.as_f64());
     let down_mbps = down_bps * 8.0 / 1_000_000.0;
@@ -801,7 +801,7 @@ fn run_ookla_speedtest() -> Option<SpeedResult> {
 }
 
 fn run_speedtest_cli() -> Option<SpeedResult> {
-    // Python speedtest-cli: --json, download/upload в bits/s
+    
     let candidates = ["speedtest-cli", "speedtest"];
     for bin in candidates {
         let probe = Command::new(bin).args(["--version"]).output();
@@ -812,11 +812,11 @@ fn run_speedtest_cli() -> Option<SpeedResult> {
             String::from_utf8_lossy(&probe.stderr)
         )
         .to_lowercase();
-        // Ookla не понимает --json так же — пропускаем явный Ookla
+        
         if ver.contains("ookla") {
             continue;
         }
-        // speedtest-cli обычно отвечает на --version; Ookla тоже — тогда пробуем --json
+        
         eprint!("    ↓ speedtest-cli ({bin}) ... ");
         let out = Command::new(bin)
             .args(["--json", "--secure"])
@@ -842,7 +842,7 @@ fn run_speedtest_cli() -> Option<SpeedResult> {
 
 fn parse_speedtest_cli_json(stdout: &[u8]) -> Option<SpeedResult> {
     let v: serde_json::Value = serde_json::from_slice(stdout).ok()?;
-    // если это Ookla JSON — не наш путь
+    
     if v.pointer("/download/bandwidth").is_some() {
         return None;
     }
@@ -885,9 +885,9 @@ fn parse_speedtest_cli_json(stdout: &[u8]) -> Option<SpeedResult> {
     })
 }
 
-/// Зеркала: для ru — только Selectel (10/100/1GB), как рекомендует провайдер.
+
 fn speed_mirrors(size_mb: u64, region: &str) -> Vec<(String, String)> {
-    // Официальные файлы Selectel
+    
     let mut selectel = vec![
         (
             "Selectel 10MB".into(),
@@ -907,7 +907,7 @@ fn speed_mirrors(size_mb: u64, region: &str) -> Vec<(String, String)> {
 
     let bytes_cf = size_mb * 1024 * 1024;
     let hetzner_file = if size_mb >= 200 { "1GB.bin" } else { "100MB.bin" };
-    // Простые публичные зеркала (если нет speedtest CLI)
+    
     let intl: Vec<(String, String)> = vec![
         (
             "Cloudflare".into(),
@@ -938,7 +938,7 @@ fn speed_mirrors(size_mb: u64, region: &str) -> Vec<(String, String)> {
             v.extend(intl);
             v
         }
-        _ => selectel, // ru
+        _ => selectel, 
     }
 }
 
@@ -964,7 +964,7 @@ struct CurlSpeed {
     seconds: f64,
 }
 
-/// Как у Selectel: `wget -O /dev/null URL` — меряем время сами.
+
 fn wget_download_mbps(url: &str) -> Option<CurlSpeed> {
     let sink = null_sink();
     let t0 = Instant::now();
@@ -974,14 +974,14 @@ fn wget_download_mbps(url: &str) -> Option<CurlSpeed> {
             sink,
             "--timeout=60",
             "--tries=1",
-            "-q", // quiet, иначе парсить stderr
+            "-q", 
             url,
         ])
         .output()
         .ok()?;
     let secs = t0.elapsed().as_secs_f64().max(1e-6);
     if !out.status.success() {
-        // fallback: не-quiet, парсим скорость из stderr
+        
         let t1 = Instant::now();
         let out2 = Command::new("wget")
             .args(["-O", sink, "--timeout=60", "--tries=1", url])
@@ -999,7 +999,7 @@ fn wget_download_mbps(url: &str) -> Option<CurlSpeed> {
                 seconds: secs2,
             });
         }
-        // оценим по известному размеру Selectel
+        
         let bytes = selectel_size_bytes(url).unwrap_or(10 * 1024 * 1024);
         return Some(CurlSpeed {
             mbps: (bytes as f64 * 8.0) / secs2 / 1_000_000.0,
@@ -1011,7 +1011,7 @@ fn wget_download_mbps(url: &str) -> Option<CurlSpeed> {
     let mbps = if bytes > 0 {
         (bytes as f64 * 8.0) / secs / 1_000_000.0
     } else {
-        // неизвестный размер — нет точной цифры
+        
         return None;
     };
     Some(CurlSpeed {
@@ -1036,13 +1036,13 @@ fn selectel_size_bytes(url: &str) -> Option<u64> {
 }
 
 fn parse_wget_speed(stderr: &str) -> Option<f64> {
-    // примеры: "10.5MB/s", "850KB/s", "1.2 MB/s"
+    
     let re_like = stderr.replace(',', ".");
     for part in re_like.split_whitespace() {
         let p = part.to_lowercase();
         if let Some(n) = p.strip_suffix("mb/s") {
             if let Ok(v) = n.parse::<f64>() {
-                return Some(v * 8.0); // MB/s → Mbps
+                return Some(v * 8.0); 
             }
         }
         if let Some(n) = p.strip_suffix("kb/s") {
@@ -1055,7 +1055,7 @@ fn parse_wget_speed(stderr: &str) -> Option<f64> {
 }
 
 fn curl_download_mbps(url: &str) -> Option<CurlSpeed> {
-    // Поддержка суффикса #range=BYTES — качаем только первые N байт (Яндекс ISO и т.п.)
+    
     let (url, range) = if let Some((base, rest)) = url.split_once("#range=") {
         let n: u64 = rest.parse().unwrap_or(0);
         if n > 0 {

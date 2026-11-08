@@ -15,7 +15,16 @@ use colored::*;
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
+pub struct DbBenchOutcome {
+    pub result: Option<crate::dbbench::DbReport>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct FullReport {
+    pub schema_version: u32,
+    pub nmos_version: &'static str,
+    pub db_bench: Option<DbBenchOutcome>,
     pub timestamp: String,
     pub claims: ProviderClaims,
     pub system: SystemInfo,
@@ -29,14 +38,50 @@ pub struct FullReport {
     pub diskio: Option<DiskIoResult>,
     pub stress: Option<StressResult>,
     pub oversell: OversellAnalysis,
+    #[allow(dead_code)]
+    #[serde(skip_serializing)]
     pub estimate: CpuEstimate,
+    #[allow(dead_code)]
+    #[serde(skip_serializing)]
     pub truth: TruthReport,
+    #[allow(dead_code)]
+    #[serde(skip_serializing)]
     pub antifraud: AntifraudReport,
 }
 
 pub fn print_human(r: &FullReport) {
     banner();
     kv("time", &r.timestamp);
+    section("Результат");
+    kv("CPU", &r.cpu.model);
+    kv("vCPU", &r.cpu.logical_cores.to_string());
+    kv("Память", &format!("{} MB", r.system.ram_total_mb));
+    kv("CPU под нагрузкой", &r.oversell.oversell_level);
+    if let Some(s) = &r.stress {
+        if let Some(d) = &s.cgroup_multi {
+            kv("cgroup CPU", &format!("периодов: {}, ограничено: {}, throttled: {} мкс", d.nr_periods, d.nr_throttled, d.throttled_usec));
+        } else { kv("cgroup CPU", "нет данных за нагрузку"); }
+    }
+    if let Some(v) = r.claims.cores { kv("Тариф vCPU", &v.to_string()); }
+    if let Some(v) = r.claims.ram_gb { kv("Тариф RAM", &format!("{v} GB")); }
+    if let Some(v) = &r.claims.cpu_model { kv("Тариф CPU", v); }
+    if let Some(v) = r.claims.disk_gb { kv("Тариф диск", &format!("{v} GB")); }
+    if let Some(v) = r.claims.net_mbps { kv("Тариф сеть", &format!("{v} Mbps")); }
+    println!("  Значения тарифа и измерения приведены отдельно.");
+
+    if let Some(outcome) = &r.db_bench {
+        section("SQLite");
+        if let Some(error) = &outcome.error { kv("Ошибка", error); }
+        if let Some(db) = &outcome.result {
+            kv("Каталог", &db.directory);
+            kv("Размер базы", &format!("{:.1} MiB", db.database_bytes as f64 / 1048576.0));
+            for (name, p) in [("1 поток", &db.single_writer), ("4 потока", &db.four_writers), ("Чтение", &db.random_read)] {
+                kv(name, &format!("{:.1} операций/с; p50/p95/p99 {:.2}/{:.2}/{:.2} мс; n={}", p.operations_per_second, p.latency_ms_p50, p.latency_ms_p95, p.latency_ms_p99, p.completed));
+                if let Some(steal) = p.steal_percent { kv("  steal", &format!("{steal:.2}%")); }
+            }
+            for note in &db.notes { println!("  • {note}"); }
+        }
+    }
 
     section("system");
     kv("Хост", &r.system.hostname);
@@ -125,7 +170,7 @@ pub fn print_human(r: &FullReport) {
             let ver = if ok {
                 "OK — паттерн цел".green().to_string()
             } else {
-                "FAIL — память врёт".red().bold().to_string()
+                "FAIL — ошибка проверки памяти".red().bold().to_string()
             };
             kv("Verify", &ver);
         }
@@ -248,19 +293,17 @@ pub fn print_human(r: &FullReport) {
         for s in &sp.download_mbps {
             let bar_pct = (s.mbps / 1000.0 * 100.0).clamp(0.0, 100.0);
             println!(
-                "    {}  {:>8.1} Mbps  {}",
+                "    {}  {:>8.1} Mbps",
                 format!("↓ {}", s.label).green(),
-                s.mbps,
-                speed_grade(s.mbps)
+                s.mbps
             );
             bar(bar_pct, "cyan");
         }
         if let Some(u) = &sp.upload_mbps {
             println!(
-                "    {}  {:>8.1} Mbps  {}",
+                "    {}  {:>8.1} Mbps",
                 format!("↑ {}", u.label).magenta(),
-                u.mbps,
-                speed_grade(u.mbps)
+                u.mbps
             );
             bar((u.mbps / 1000.0 * 100.0).clamp(0.0, 100.0), "magenta");
         }
@@ -358,129 +401,15 @@ pub fn print_human(r: &FullReport) {
         println!();
     }
 
-    section("oversell");
-    let lvl = oversell_color(&r.oversell.oversell_level, r.oversell.oversell_factor);
-    kv("Фактор", &format!("{:.2}×  [{}]", r.oversell.oversell_factor, lvl));
-    kv(
-        "Эффект. ядер",
-        &format!(
-            "≈ {:.2} из {}",
-            r.oversell.effective_cores, r.cpu.logical_cores
-        ),
-    );
-    kv("Perf. ratio", &format!("{:.2}", r.oversell.performance_ratio));
-    kv("Уверенность", &r.oversell.confidence);
-    // Чем выше фактор — тем больше «занятости» бара
-    let oversell_pct = ((r.oversell.oversell_factor - 1.0) / 5.0 * 100.0).clamp(0.0, 100.0);
-    bar(
-        oversell_pct,
-        if r.oversell.oversell_factor < 1.3 {
-            "green"
-        } else if r.oversell.oversell_factor < 2.5 {
-            "yellow"
-        } else {
-            "red"
-        },
-    );
+    section("CPU: признаки ограничений");
+    kv("Статус", &r.oversell.oversell_level);
+    kv("Данные", &r.oversell.confidence);
     for reason in &r.oversell.reasons {
         println!("  {} {}", "•".dimmed(), reason);
     }
     println!();
 
-    section("cpu equivalent");
-    kv("advertised", &r.estimate.advertised_model);
-    if let Some(c) = &r.estimate.catalog_match {
-        kv("catalog", c);
-    }
-    println!(
-        "  {}  {}",
-        pad("equiv"),
-        r.estimate.estimated_equivalent.bright_green().bold()
-    );
-    kv("tier", &r.estimate.estimated_tier);
-    if !r.estimate.nearest_matches.is_empty() {
-        println!("  {}", "nearest:".dimmed());
-        for (i, m) in r.estimate.nearest_matches.iter().enumerate() {
-            println!(
-                "    {}. {}  st {:.0} / mt {:.0}",
-                i + 1,
-                m.name.bright_white(),
-                m.score_single,
-                m.score_multi
-            );
-        }
-    }
     println!();
-    println!("  {}", r.estimate.commentary.dimmed());
-    println!();
-
-    print_truth(&r.truth);
-    print_antifraud(&r.antifraud);
-    summary_box(r);
-    println!();
-    println!(
-        "{}",
-        "numbers drift on shared hosts; use -d 5..10 on an idle box".dimmed()
-    );
-    println!();
-}
-
-fn summary_box(r: &FullReport) {
-    println!();
-    section("summary");
-    kv("cpu", &truncate(&r.cpu.model, 48));
-    kv("equiv", &truncate(&r.estimate.estimated_equivalent, 48));
-    kv(
-        "oversell",
-        &format!(
-            "{:.2}x ({})",
-            r.oversell.oversell_factor, r.oversell.oversell_level
-        ),
-    );
-    if let Some(s) = &r.stress {
-        kv(
-            "st/mt",
-            &format!("{:.0} / {:.0}", s.score_single, s.score_multi),
-        );
-    }
-    kv(
-        "ram",
-        &format!(
-            "{} MB ({:.0}% used)",
-            r.system.ram_total_mb, r.system.ram_used_percent
-        ),
-    );
-    if let Some(ip) = &r.network.public_ip {
-        kv("ip", ip);
-    }
-    if let Some(sp) = &r.network.speed {
-        if let Some(best) = sp.best_download_mbps {
-            let up = sp
-                .upload_mbps
-                .as_ref()
-                .map(|u| format!(" / up {:.0}", u.mbps))
-                .unwrap_or_default();
-            kv("net down", &format!("{best:.0} Mbps{up}"));
-        }
-    }
-    if let Some(steal) = r.cpu.steal_percent {
-        kv("steal", &format!("{steal:.1}%"));
-    }
-    kv(
-        "trust",
-        &format!("{:.0}/100 ({})", r.truth.trust_score, r.truth.verdict_level),
-    );
-    if r.tech.available {
-        kv("isa", &truncate(&r.tech.isa_level, 48));
-    }
-    kv(
-        "honesty",
-        &format!(
-            "{:.0}/100 grade {}",
-            r.antifraud.honesty_score, r.antifraud.grade
-        ),
-    );
-    kv("verdict", &truncate(&r.antifraud.headline, 48));
 }
 
 fn banner() {
@@ -538,30 +467,6 @@ fn latency_color(ms: f64) -> String {
         s.yellow().to_string()
     } else {
         s.red().to_string()
-    }
-}
-
-fn speed_grade(mbps: f64) -> ColoredString {
-    if mbps >= 500.0 {
-        "отлично".green().bold()
-    } else if mbps >= 100.0 {
-        "хорошо".green()
-    } else if mbps >= 50.0 {
-        "средне".yellow()
-    } else if mbps >= 20.0 {
-        "слабо".yellow()
-    } else {
-        "плохо".red().bold()
-    }
-}
-
-fn oversell_color(level: &str, factor: f64) -> String {
-    if factor < 1.2 {
-        level.green().bold().to_string()
-    } else if factor < 2.0 {
-        level.yellow().to_string()
-    } else {
-        level.red().bold().to_string()
     }
 }
 
@@ -866,94 +771,6 @@ fn print_extras(x: &crate::extras::ExtraProbe) {
     }
     for n in &x.notes {
         println!("  {} {}", "•".dimmed(), n.dimmed());
-    }
-    println!();
-}
-
-fn print_truth(t: &TruthReport) {
-    section("passport check");
-    let verdict_c = match t.verdict_level.as_str() {
-        "lie" => t.verdict.red().bold().to_string(),
-        "suspect" => t.verdict.yellow().bold().to_string(),
-        _ => t.verdict.green().bold().to_string(),
-    };
-    kv("verdict", &verdict_c);
-    kv("trust", &format!("{:.0} / 100", t.trust_score));
-    bar(
-        t.trust_score,
-        if t.trust_score >= 80.0 {
-            "green"
-        } else if t.trust_score >= 55.0 {
-            "yellow"
-        } else {
-            "red"
-        },
-    );
-    if let Some(c) = &t.matched_catalog {
-        kv("catalog", c);
-    }
-    if let (Some(e), Some(m), Some(r)) = (t.expected_st, t.measured_st, t.st_ratio) {
-        kv(
-            "st expect/got",
-            &format!("{e:.0} / {m:.0}  ({:.0}%)", r * 100.0),
-        );
-    }
-    for f in &t.findings {
-        let mark = match f.severity.as_str() {
-            "critical" => "x".red().bold().to_string(),
-            "warn" => "!".yellow().to_string(),
-            _ => "-".dimmed().to_string(),
-        };
-        println!("    {} [{}] {}", mark, f.code.dimmed(), f.message);
-    }
-    println!();
-    println!("  {}", t.summary.dimmed());
-    println!();
-}
-
-fn print_antifraud(a: &AntifraudReport) {
-    section("checklist");
-    let head = match a.grade.as_str() {
-        "A" | "B" => a.headline.green().bold().to_string(),
-        "C" => a.headline.yellow().bold().to_string(),
-        _ => a.headline.red().bold().to_string(),
-    };
-    kv("result", &head);
-    kv(
-        "honesty",
-        &format!("{:.0} / 100  grade {}", a.honesty_score, a.grade),
-    );
-    bar(
-        a.honesty_score,
-        if a.honesty_score >= 80.0 {
-            "green"
-        } else if a.honesty_score >= 55.0 {
-            "yellow"
-        } else {
-            "red"
-        },
-    );
-    if !a.claims_used {
-        println!(
-            "  {} {}",
-            "!".yellow(),
-            "pass --claim-* from the plan for a full check".yellow()
-        );
-    }
-    println!();
-    for c in &a.checklist {
-        let mark = match c.status.as_str() {
-            "pass" => "ok  ".green().to_string(),
-            "warn" => "warn".yellow().to_string(),
-            "fail" => "fail".red().bold().to_string(),
-            "info" => "info".cyan().to_string(),
-            _ => "skip".dimmed().to_string(),
-        };
-        println!("  [{mark}] {:<16} {}", c.area, c.detail);
-    }
-    println!();
-    for adv in &a.advice {
-        println!("  > {}", adv);
     }
     println!();
 }

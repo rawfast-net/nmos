@@ -16,7 +16,7 @@ pub struct CpuInfo {
     pub freq_mhz_min: Option<u64>,
     pub freq_mhz_max: Option<u64>,
     pub freq_mhz_current_avg: Option<f64>,
-    /// Доп. анализ частоты (VDS часто врёт «ровно 3000»)
+    
     pub freq_analysis: FreqAnalysis,
     pub cache_l1_kb: Option<u64>,
     pub cache_l2_kb: Option<u64>,
@@ -167,7 +167,7 @@ fn guess_vendor(model: &str) -> String {
 
 #[cfg(target_os = "windows")]
 fn wmic_cpu_name() -> Option<String> {
-    // Prefer PowerShell CIM — wmic deprecated on newer Windows
+    
     if let Ok(out) = Command::new("powershell")
         .args([
             "-NoProfile",
@@ -220,7 +220,7 @@ fn analyze_frequency(
     };
     if !cpufreq_available {
         notes.push(
-            "Нет cpufreq в sysfs — в госте VDS частота часто фиктивная (паспорт гипервизора)".into(),
+            "Нет cpufreq в sysfs; частота может быть недоступна гостевой системе".into(),
         );
     }
 
@@ -228,7 +228,7 @@ fn analyze_frequency(
     let all_cores_same = nonzero.len() > 1 && nonzero.iter().all(|&f| f == nonzero[0]);
     if all_cores_same {
         notes.push(format!(
-            "Все ядра показывают одинаковые {} МГц — типично для виртуалки",
+            "Для всех ядер указана частота {} МГц",
             nonzero[0]
         ));
     }
@@ -239,12 +239,12 @@ fn analyze_frequency(
     };
     if sticky_min_eq_max {
         notes.push(format!(
-            "min=max={} МГц — нет диапазона частот (turbo/P-states скрыты или фейк)",
+            "min=max={} МГц — диапазон частот недоступен гостевой системе",
             min.unwrap()
         ));
     }
 
-    // «Круглые» GHz: 2000/2500/2800/3000/3200/3500 без дробной части из cpuinfo
+    
     let suspect_vals = [2000u64, 2200, 2400, 2500, 2600, 2800, 3000, 3200, 3400, 3500, 3600];
     let round_ghz_suspect = [reported, max, min]
         .into_iter()
@@ -255,7 +255,7 @@ fn analyze_frequency(
     if let Some(f) = reported.or(max) {
         if suspect_vals.contains(&f) {
             notes.push(format!(
-                "Частота ровно {f} МГц ({:.2} GHz) — на VDS это почти всегда номинал из паспорта, не замер turbo",
+                "Указанная частота: {f} МГц ({:.2} GHz); фактическая частота может отличаться",
                 f as f64 / 1000.0
             ));
         }
@@ -266,7 +266,7 @@ fn analyze_frequency(
         let ratio = imp / rep as f64;
         if !(0.85..=1.25).contains(&ratio) {
             notes.push(format!(
-                "BogoMIPS/2 ≈ {imp:.0} МГц, паспорт {rep} МГц (ratio {ratio:.2}) — рассинхрон калибровки"
+                "BogoMIPS/2 ≈ {imp:.0} МГц, указанная частота {rep} МГц (отношение {ratio:.2})"
             ));
         }
     }
@@ -282,7 +282,7 @@ fn analyze_frequency(
     }
 
     notes.push(
-        "Важно: «реальный» CPU определяется по стресс-тесту и каталогу, а не по цифре 3.00 GHz".into(),
+        "Частота и результат теста не позволяют определить физическую модель процессора".into(),
     );
 
     FreqAnalysis {
@@ -297,11 +297,11 @@ fn analyze_frequency(
     }
 }
 
-/// Текущая частота (МГц) из sysfs / cpuinfo — для замера под нагрузкой.
+
 pub fn sample_current_mhz() -> Option<f64> {
     #[cfg(target_os = "linux")]
     {
-        // scaling_cur_freq в kHz
+        
         if let Ok(entries) = fs::read_dir("/sys/devices/system/cpu") {
             let mut vals = Vec::new();
             for e in entries.flatten() {
@@ -321,7 +321,7 @@ pub fn sample_current_mhz() -> Option<f64> {
                 return Some(vals.iter().sum::<f64>() / vals.len() as f64);
             }
         }
-        // fallback: /proc/cpuinfo
+        
         if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
             let mut vals = Vec::new();
             for line in content.lines() {
@@ -373,7 +373,7 @@ fn read_freq_limits() -> (Option<u64>, Option<u64>) {
 #[cfg(target_os = "linux")]
 fn read_mhz(path: &str) -> Option<u64> {
     let raw: u64 = fs::read_to_string(path).ok()?.trim().parse().ok()?;
-    // sysfs часто в kHz
+    
     Some(if raw > 10_000 { raw / 1000 } else { raw })
 }
 
@@ -480,7 +480,7 @@ fn detect_virtualization() -> VirtInfo {
                 evidence.push("Признаки контейнера в cgroup".into());
             }
         }
-        // systemd-detect-virt
+        
         if let Ok(out) = Command::new("systemd-detect-virt").output() {
             let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !v.is_empty() && v != "none" {
@@ -581,7 +581,7 @@ fn read_steal_percent() -> Option<f64> {
         if total == 0 {
             return Some(0.0);
         }
-        // steal + недогрузка относительно «честного» idle не нужна — только steal
+        
         let _ = idle;
         return Some((steal as f64 / total as f64) * 100.0);
     }
@@ -611,7 +611,7 @@ fn read_proc_stat() -> Option<StatSample> {
     let idle = parts[3];
     let iowait = parts.get(4).copied().unwrap_or(0);
     let steal = parts.get(7).copied().unwrap_or(0);
-    let total: u64 = parts.iter().sum();
+    let total: u64 = parts.iter().take(8).sum();
     Some(StatSample {
         idle,
         iowait,

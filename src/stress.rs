@@ -7,7 +7,11 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StressResult {
+    pub benchmark_version: &'static str,
     pub duration_sec: f64,
+    pub steal_percent_load: Option<f64>,
+    pub cgroup_single: Option<crate::cgroup::CpuDelta>,
+    pub cgroup_multi: Option<crate::cgroup::CpuDelta>,
     pub threads: usize,
     pub single_ops: u64,
     pub multi_ops: u64,
@@ -17,7 +21,7 @@ pub struct StressResult {
     pub score_single: f64,
     pub score_multi: f64,
     pub latency_ns_estimate: f64,
-    /// Частота до/во время/после нагрузки (МГц)
+    
     pub freq_idle_mhz: Option<f64>,
     pub freq_load_mhz: Option<f64>,
     pub freq_after_mhz: Option<f64>,
@@ -25,7 +29,7 @@ pub struct StressResult {
     pub freq_load_samples: Vec<f64>,
 }
 
-/// Интенсивный целочисленный + FP workload (детерминированный).
+
 #[inline(never)]
 fn burn_iteration(state: u64) -> u64 {
     let mut acc = state;
@@ -67,8 +71,9 @@ fn sample_freq_while(stop: Arc<AtomicBool>, out: Arc<std::sync::Mutex<Vec<f64>>>
 pub fn run(duration_sec: f64, threads: usize) -> StressResult {
     let duration = Duration::from_secs_f64(duration_sec);
     let freq_idle = cpu::sample_current_mhz();
+    let cgroup_single_before = crate::cgroup::sample();
 
-    // Single-thread + sampling частоты
+    
     let stop = Arc::new(AtomicBool::new(false));
     let samples = Arc::new(std::sync::Mutex::new(Vec::new()));
     let stop_c = Arc::clone(&stop);
@@ -79,6 +84,7 @@ pub fn run(duration_sec: f64, threads: usize) -> StressResult {
     std::thread::sleep(duration);
     stop.store(true, Ordering::Relaxed);
     let single_ops = handle.join().unwrap_or(0);
+    let cgroup_single_after = crate::cgroup::sample();
     let _ = sampler.join();
     let single_ops_per_sec = single_ops as f64 / duration_sec;
 
@@ -89,7 +95,10 @@ pub fn run(duration_sec: f64, threads: usize) -> StressResult {
         Some(load_samples.iter().sum::<f64>() / load_samples.len() as f64)
     };
 
-    // Multi-thread
+    
+    let before = steal_sample();
+    let cgroup_multi_before = crate::cgroup::sample();
+    
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = Arc::clone(&stop);
     let multi_handle = std::thread::spawn(move || {
@@ -103,6 +112,13 @@ pub fn run(duration_sec: f64, threads: usize) -> StressResult {
     let multi_ops = multi_handle.join().unwrap_or(0);
     let multi_ops_per_sec = multi_ops as f64 / duration_sec;
 
+    let after = steal_sample();
+    let cgroup_multi_after = crate::cgroup::sample();
+    let steal_percent_load = before.zip(after).and_then(|((a, at), (b, bt))| {
+        let total = bt.checked_sub(at)?;
+        if total == 0 { return None; }
+        Some(b.checked_sub(a)? as f64 * 100.0 / total as f64)
+    });
     let freq_after = cpu::sample_current_mhz();
     let freq_delta = match (freq_idle, freq_load) {
         (Some(a), Some(b)) => Some(b - a),
@@ -125,7 +141,11 @@ pub fn run(duration_sec: f64, threads: usize) -> StressResult {
     };
 
     StressResult {
+        benchmark_version: "nmos-cpu-1",
         duration_sec,
+        steal_percent_load,
+        cgroup_single: cgroup_single_before.zip(cgroup_single_after).and_then(|(a,b)| crate::cgroup::delta(&a, &b)),
+        cgroup_multi: cgroup_multi_before.zip(cgroup_multi_after).and_then(|(a,b)| crate::cgroup::delta(&a, &b)),
         threads,
         single_ops,
         multi_ops,
@@ -143,7 +163,20 @@ pub fn run(duration_sec: f64, threads: usize) -> StressResult {
     }
 }
 
-/// Короткий калибровочный замер: ops за фиксированное время vs ожидаемое по МГц.
+pub(crate) fn steal_sample() -> Option<(u64, u64)> {
+    #[cfg(target_os = "linux")]
+    {
+        let raw = std::fs::read_to_string("/proc/stat").ok()?;
+        let values: Vec<u64> = raw.lines().next()?.split_whitespace().skip(1)
+            .map(str::parse).collect::<Result<_, _>>().ok()?;
+        if values.len() < 8 { return None; }
+        return Some((values[7], values.iter().take(8).sum()));
+    }
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+
 #[allow(dead_code)]
 pub fn calibrate_brief() -> (f64, Option<f64>) {
     let t0 = Instant::now();

@@ -11,7 +11,7 @@ pub struct CpuRealityReport {
     pub decoded_from: String,
     pub catalog_match: Option<String>,
     pub catalog_gen: Option<String>,
-    pub consistency: String, // ok | warn | fail
+    pub consistency: String, 
     pub expected_tech: Vec<TechExpect>,
     pub mismatches: Vec<String>,
     pub matches: Vec<String>,
@@ -29,9 +29,9 @@ pub struct TechExpect {
 
 struct UarchProfile {
     name: &'static str,
-    /// обязательные флаги
+    
     must: &'static [&'static str],
-    /// желательные
+    
     should: &'static [&'static str],
 }
 
@@ -50,7 +50,7 @@ pub fn analyze(cpu: &CpuInfo, deep: &DeepProbe, tech: &TechReport) -> CpuReality
     let catalog_match = cat.map(|c| c.name.to_string());
     let catalog_gen = cat.map(|c| c.gen.to_string());
 
-    // Профиль ожидаемых технологий: сначала по декодированному uarch, иначе по каталогу gen
+    
     let profile = decoded
         .as_ref()
         .and_then(|u| profile_by_name(u))
@@ -78,7 +78,7 @@ pub fn analyze(cpu: &CpuInfo, deep: &DeepProbe, tech: &TechReport) -> CpuReality
             }
         }
         for id in p.should {
-            // В KVM/госте constant_tsc часто не экспонируется — не шумим
+            
             if *id == "constant_tsc" && deep.cpu_ids.has_hypervisor_flag {
                 continue;
             }
@@ -111,26 +111,26 @@ pub fn analyze(cpu: &CpuInfo, deep: &DeepProbe, tech: &TechReport) -> CpuReality
         }
     }
 
-    // Имя в паспорте vs family/model decode
+    
     if let (Some(uarch), Some(c)) = (decoded.as_ref(), cat) {
         let aligned = uarch_aligned(c.gen, uarch);
 
         if aligned {
-            matches.push(format!("Паспорт «{}» согласован с decode «{}»", c.name, uarch));
+            matches.push(format!("Модель «{}» соответствует расшифровке CPUID «{}»", c.name, uarch));
         } else {
             mismatches.push(format!(
-                "Паспорт gen «{}», а CPUID decode «{}» — возможная подмена model name",
+                "Поколение «{}», расшифровка CPUID «{}» — данные различаются",
                 c.gen, uarch
             ));
         }
     }
 
-    // Hypervisor + «bare metal» имя
+    
     if deep.cpu_ids.has_hypervisor_flag {
         notes.push("CPUID.hypervisor=1 — это гость гипервизора".into());
     }
 
-    // BogoMIPS sanity vs passport MHz
+    
     if let (Some(b), Some(mhz)) = (cpu.bogomips, cpu.freq_mhz_max.or(cpu.freq_mhz_reported)) {
         let ratio = (b / 2.0) / mhz as f64;
         if !(0.7..=1.4).contains(&ratio) {
@@ -145,7 +145,7 @@ pub fn analyze(cpu: &CpuInfo, deep: &DeepProbe, tech: &TechReport) -> CpuReality
         }
     }
 
-    // ISA level vs catalog
+    
     if let Some(c) = cat {
         let isa = tech.isa_level.to_lowercase();
         let gen = c.gen.to_lowercase();
@@ -370,11 +370,11 @@ static ZEN4: UarchProfile = UarchProfile {
 static ZEN5: UarchProfile = UarchProfile {
     name: "AMD Zen 5",
     must: &["avx2", "avx512f", "fma", "aes", "sha_ni", "bmi2", "popcnt"],
-    // AMX — Intel-only; constant_tsc часто маскируется в KVM — не should
+    
     should: &["pdpe1gb", "rdrand", "vaes", "rdseed"],
 };
 
-/// «Zen5» ↔ «Zen 5», «Family 1Ah» и т.п.
+
 fn uarch_aligned(gen: &str, uarch: &str) -> bool {
     let gen_l = gen.to_lowercase();
     let u_l = uarch.to_lowercase();
@@ -384,7 +384,7 @@ fn uarch_aligned(gen: &str, uarch: &str) -> bool {
     if !gen_n.is_empty() && (u_n.contains(&gen_n) || gen_n.contains(&u_n)) {
         return true;
     }
-    // Zen N без пробела
+    
     for n in 1..=5 {
         let a = format!("zen{n}");
         let b = format!("zen {n}");
@@ -414,17 +414,17 @@ fn normalize_arch(s: &str) -> String {
         .to_lowercase()
 }
 
-/// Декод CPUID family/model → микроархитектура (основные серверные).
+
 fn decode_uarch(family: Option<u32>, model: Option<u32>, vendor: &str) -> Option<String> {
     let family = family?;
     let model = model?;
     let v = vendor.to_lowercase();
 
     if v.contains("amd") || v.contains("authenticamd") {
-        // AMD: DisplayFamily_DisplayModel
-        // Zen2 EPYC: Family 23 (17h), models 0x30-0x3F etc
-        // Zen3: Family 25 (19h)
-        // Zen4: Family 25 (19h) models 0x10-0x1F (Genoa) / etc
+        
+        
+        
+        
         match family {
             0x17 => {
                 if (0x30..=0x3F).contains(&model) {
@@ -460,7 +460,7 @@ fn decode_uarch(family: Option<u32>, model: Option<u32>, vendor: &str) -> Option
                 return Some("AMD Family 19h (Zen3/Zen4)".into());
             }
             0x1A => {
-                // Zen5 Granite Ridge / Turin / Strix
+                
                 if (0x40..=0x4F).contains(&model) {
                     return Some("AMD Zen 5 / Granite Ridge (desktop)".into());
                 }
@@ -476,7 +476,7 @@ fn decode_uarch(family: Option<u32>, model: Option<u32>, vendor: &str) -> Option
     }
 
     if v.contains("intel") || v.contains("genuineintel") {
-        // Intel: Family 6 mostly for modern
+        
         if family == 6 {
             return Some(match model {
                 0x3E => "Intel Ivy Bridge-EP".into(),

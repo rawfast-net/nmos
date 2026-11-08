@@ -1,0 +1,54 @@
+name: Publish approved result
+on:
+  issues:
+    types: [labeled]
+jobs:
+  update:
+    if: github.event.label.name == 'approved' && !github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$DEFAULT_BRANCH"
+            git reset --hard FETCH_HEAD
+            node scripts/moderate.mjs "$GITHUB_EVENT_PATH"
+            if git diff --quiet -- docs/data/results.json; then exit 0; fi
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add docs/data/results.json
+            git commit -m "Add approved result #${ISSUE_NUMBER}"
+            if git push origin "HEAD:$DEFAULT_BRANCH"; then exit 0; fi
+          done
+          echo 'Не удалось обновить таблицу' >&2
+          exit 1
+  deploy:
+    needs: update
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,14 +1,18 @@
 mod antifraud;
 mod catalog;
+mod cgroup;
 mod cpu;
 mod cpureality;
 mod diskio;
+mod dbbench;
 mod extras;
 mod memcheck;
+mod monitor;
 mod network;
 mod oversell;
 mod probe;
 mod report;
+mod share;
 mod stress;
 mod system;
 mod tech;
@@ -25,7 +29,28 @@ use report::FullReport;
     version
 )]
 struct Args {
-    /// Stress test duration per phase, seconds
+    #[arg(long, help = "Do not offer to prepare a public result")]
+    no_share_prompt: bool,
+    #[arg(long, help = "Record passive CPU counters as JSON lines")]
+    monitor: bool,
+
+    #[arg(long, default_value_t = 96, value_parser = clap::value_parser!(u32).range(1..=100000))]
+    monitor_count: u32,
+
+    #[arg(long, default_value_t = 900, value_parser = clap::value_parser!(u64).range(1..=86400))]
+    monitor_interval: u64,
+    #[arg(long, help = "Run SQLite storage tests")]
+    db_bench: bool,
+
+    #[arg(long, default_value = ".", help = "Directory for the temporary SQLite database")]
+    db_dir: std::path::PathBuf,
+
+    #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(1..=4096))]
+    db_mb: u64,
+
+    #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..=1000000))]
+    db_operations: u64,
+    
     #[arg(short, long, default_value_t = 4.0)]
     duration: f64,
 
@@ -41,19 +66,19 @@ struct Args {
     #[arg(long)]
     skip_mem: bool,
 
-    /// Download test size, MB (10–500)
+    
     #[arg(long, default_value_t = 100)]
     speed_mb: u64,
 
-    /// Disk I/O test size, MB
+    
     #[arg(long, default_value_t = 256)]
     disk_mb: u64,
 
-    /// RAM test size, MB (capped by available)
+    
     #[arg(long, default_value_t = 512)]
     mem_mb: u64,
 
-    /// Speed/ping region: auto | ru | intl | all
+    
     #[arg(long, default_value = "auto")]
     region: String,
 
@@ -75,7 +100,7 @@ struct Args {
     #[arg(long)]
     json: bool,
 
-    /// No outbound network
+    
     #[arg(long)]
     offline: bool,
 
@@ -85,6 +110,13 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+    if args.monitor {
+        if let Err(e) = monitor::run(args.monitor_count, args.monitor_interval) {
+            eprintln!("Ошибка мониторинга: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let duration = args.duration.clamp(0.5, 60.0);
     let speed_mb = args.speed_mb.clamp(10, 500);
     let disk_mb = args.disk_mb.clamp(64, 1024);
@@ -205,7 +237,17 @@ fn main() {
         Some(&extras),
     );
 
+    let db_bench = if args.db_bench {
+        eprintln!("SQLite: тест в {} ({} MiB)", args.db_dir.display(), args.db_mb);
+        Some(match dbbench::run(&args.db_dir, args.db_mb, args.db_operations as usize) {
+            Ok(result) => report::DbBenchOutcome { result: Some(result), error: None },
+            Err(error) => report::DbBenchOutcome { result: None, error: Some(error) },
+        })
+    } else { None };
+
     let report = FullReport {
+        schema_version: 2,
+        nmos_version: env!("CARGO_PKG_VERSION"),
         timestamp: chrono::Local::now().to_rfc3339(),
         claims,
         system: sys_info,
@@ -222,6 +264,7 @@ fn main() {
         estimate,
         truth,
         antifraud,
+        db_bench,
     };
 
     if args.json {
@@ -229,9 +272,15 @@ fn main() {
     } else {
         report::print_human(&report);
     }
+    if report.db_bench.as_ref().is_some_and(|outcome| outcome.error.is_some()) {
+        std::process::exit(1);
+    }
+    if !args.json && !args.offline && !args.no_share_prompt {
+        if let Err(e) = share::offer(&report) { eprintln!("Публикация отменена: {e}"); }
+    }
 }
 
-// PSI / cgroup throttle after stress — pre-load numbers are useless
+
 fn refresh_load_metrics(
     extras: extras::ExtraProbe,
     _stress: Option<&stress::StressResult>,

@@ -17,7 +17,7 @@ pub struct MemCheckResult {
 pub fn run(target_mb: u64, ram_total_mb: u64, swap_total_mb: u64) -> MemCheckResult {
     let mut notes = Vec::new();
 
-    // Не валим OOM: берём min(target, 60% RAM, 2048), минимум 128
+    
     let safe_cap = ((ram_total_mb as f64) * 0.55) as u64;
     let tested_mb = target_mb
         .max(128)
@@ -45,7 +45,7 @@ pub fn run(target_mb: u64, ram_total_mb: u64, swap_total_mb: u64) -> MemCheckRes
         Some(b) => b,
         None => {
             notes.push(format!(
-                "Не удалось выделить {tested_mb} MB — RAM меньше паспорта или сильный balloon/cgroup"
+                "Не удалось выделить {tested_mb} MB; проверьте доступную память и ограничения"
             ));
             return MemCheckResult {
                 tested_mb,
@@ -60,13 +60,13 @@ pub fn run(target_mb: u64, ram_total_mb: u64, swap_total_mb: u64) -> MemCheckRes
         }
     };
 
-    // WRITE pattern
+    
     let t0 = Instant::now();
     fill_pattern(&mut buf);
     let write_secs = t0.elapsed().as_secs_f64().max(1e-6);
     let write_gbps = (bytes as f64 / write_secs) / 1e9;
 
-    // VERIFY
+    
     let t1 = Instant::now();
     let ok = verify_pattern(&buf);
     let read_secs = t1.elapsed().as_secs_f64().max(1e-6);
@@ -80,14 +80,14 @@ pub fn run(target_mb: u64, ram_total_mb: u64, swap_total_mb: u64) -> MemCheckRes
         ));
     }
 
-    // Очень низкая «RAM bandwidth» может значить что пошли в swap
+    
     if write_gbps < 1.5 && tested_mb >= 256 {
         notes.push(
-            "Скорость записи в «RAM» подозрительно низкая — возможно ушли в swap/balloon".into(),
+            "Низкая скорость записи в память; проверьте swap и ограничения памяти".into(),
         );
     }
 
-    // drop buffer
+    
     drop(buf);
 
     MemCheckResult {
@@ -112,7 +112,7 @@ fn try_alloc(bytes: usize) -> Option<Vec<u8>> {
 }
 
 fn fill_pattern(buf: &mut [u8]) {
-    // 64-bit паттерн по страницам: index ^ magic
+    
     let magic = 0xC0FFEE_u64;
     let chunks = buf.len() / 8;
     for i in 0..chunks {
@@ -133,7 +133,7 @@ fn verify_pattern(buf: &[u8]) -> bool {
         if u64::from_le_bytes(got) != expected {
             return false;
         }
-        // лёгкий black_box
+        
         std::hint::black_box(got);
     }
     true
@@ -144,17 +144,17 @@ fn detect_balloon() -> Option<String> {
     {
         use std::fs;
         use std::path::Path;
-        // virtio-balloon
+        
         if Path::new("/sys/bus/virtio/drivers/virtio_balloon").exists() {
             return Some(
-                "virtio_balloon есть (типично для KVM) — сдувание RAM возможно, но не доказано"
+                "Обнаружено устройство virtio_balloon; его наличие не подтверждает ограничение памяти"
                     .into(),
             );
         }
         if let Ok(entries) = fs::read_dir("/sys/bus/virtio/devices") {
             for e in entries.flatten() {
                 if let Ok(name) = fs::read_to_string(e.path().join("device")) {
-                    // balloon device id often 0x05
+                    
                     if name.trim() == "0x05" || name.to_lowercase().contains("balloon") {
                         return Some(
                             "Virtio balloon device присутствует — следите за avail RAM под нагрузкой"
@@ -164,7 +164,7 @@ fn detect_balloon() -> Option<String> {
                 }
             }
         }
-        // xen balloon
+        
         if Path::new("/sys/devices/system/xen_memory").exists()
             || Path::new("/proc/xen").exists()
         {

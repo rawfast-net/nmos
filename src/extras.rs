@@ -82,7 +82,7 @@ pub fn collect(sys: &SystemInfo, cpu: &CpuInfo) -> ExtraProbe {
         let entropy_poolsize = read_u64("/proc/sys/kernel/random/poolsize");
         let thp_enabled = read_trim("/sys/kernel/mm/transparent_hugepage/enabled")
             .map(|s| {
-                // [always] madvise never → extract bracket or whole
+                
                 s.split_whitespace()
                     .find(|x| x.starts_with('[') && x.ends_with(']'))
                     .map(|x| x.trim_matches(|c| c == '[' || c == ']').to_string())
@@ -176,7 +176,7 @@ pub fn collect(sys: &SystemInfo, cpu: &CpuInfo) -> ExtraProbe {
     }
 }
 
-/// Скоринг расширенных сигналов → findings для Trust.
+
 pub fn analyze(
     x: &ExtraProbe,
     cpu: &CpuInfo,
@@ -193,7 +193,7 @@ pub fn analyze(
         if cs_l.contains("kvm") || cs_l.contains("xen") || cs_l.contains("hyperv") {
             f.push(info(
                 "clock_paravirt",
-                format!("clocksource={cs} — паравирт таймер (типично для VM)"),
+                format!("clocksource={cs} — паравиртуальный источник времени"),
             ));
         } else if cs_l == "tsc" {
             f.push(info("clock_tsc", "clocksource=tsc".into()));
@@ -219,7 +219,7 @@ pub fn analyze(
         if p99 > 2500.0 {
             f.push(warn(
                 "timer_jitter_high",
-                format!("p99 sleep jitter {p99:.0}µs — шумные соседи / steal / плохие таймеры"),
+                format!("p99 sleep jitter {p99:.0}µs — задержка таймера; причина не установлена"),
             ));
         }
     }
@@ -244,7 +244,7 @@ pub fn analyze(
         } else if p > 10.0 {
             f.push(warn(
                 "psi_cpu_mid",
-                format!("CPU PSI some avg10={p:.1}% — нагрузка/соседи"),
+                format!("CPU PSI some avg10={p:.1}% — ожидание CPU"),
             ));
         } else {
             f.push(info("psi_cpu_ok", format!("CPU PSI avg10={p:.1}%")));
@@ -254,7 +254,7 @@ pub fn analyze(
         if p > 20.0 {
             f.push(warn(
                 "psi_io_high",
-                format!("IO PSI some avg10={p:.1}% — диск/соседи давят"),
+                format!("IO PSI some avg10={p:.1}% — ожидание ввода-вывода"),
             ));
         } else {
             f.push(info("psi_io", format!("IO PSI avg10={p:.1}%")));
@@ -273,12 +273,12 @@ pub fn analyze(
 
     if let Some(n) = x.cgroup_nr_throttled {
         let usec = x.cgroup_throttled_usec.unwrap_or(0);
-        // nr_throttled — lifetime счётчик; без usec/uptime нельзя считать «сейчас режут»
+        
         if usec >= 5_000_000 {
             f.push(warn(
                 "cgroup_throttled",
                 format!(
-                    "cpu.stat throttled_usec={usec} (nr={n}) — квота реально съела ≥5с CPU"
+                    "cpu.stat throttled_usec={usec} (nr={n}) — накопленный счётчик; текущий интервал не измерен"
                 ),
             ));
         } else if n > 0 {
@@ -296,7 +296,7 @@ pub fn analyze(
         if w < 50 {
             f.push(warn(
                 "cgroup_cpu_weight_low",
-                format!("cpu.weight={w} — низкий приоритет относительно соседей"),
+                format!("cpu.weight={w} — настроен низкий относительный вес CPU"),
             ));
         } else {
             f.push(info("cgroup_cpu_weight", format!("cpu.weight={w}")));
@@ -378,7 +378,7 @@ pub fn analyze(
     {
         f.push(warn(
             "dmi_cloud_no_virt",
-            format!("DMI vendor «{vendor}», но виртуализация не детектится — странно"),
+            format!("DMI vendor «{vendor}»; виртуализация не определена"),
         ));
     }
     let model_l = cpu.model.to_lowercase();
@@ -388,7 +388,7 @@ pub fn analyze(
     {
         f.push(info(
             "dmi_generic_product",
-            format!("Паспорт CPU «дорогой», DMI product «{product}» — норма для VDS"),
+            format!("Модель CPU и DMI product «{product}» представлены виртуальной системой"),
         ));
     }
     if let Some(ref uuid) = x.product_uuid {
@@ -497,7 +497,7 @@ pub fn analyze(
             } else if mbps > 0 && mbps < 1000 {
                 f.push(info(
                     "net_link",
-                    format!("{s} — не гигабит (часто норма для VPS, не fraud)"),
+                    format!("Скорость интерфейса: {s}"),
                 ));
             } else {
                 f.push(info("net_link", s.clone()));
@@ -506,7 +506,7 @@ pub fn analyze(
             f.push(info("net_link", s.clone()));
         }
     }
-    // claim-like: iface speed vs measured download
+    
     if let Some(best) = net.speed.as_ref().and_then(|s| s.best_download_mbps) {
         let max_link = x
             .net_link_speeds
@@ -520,7 +520,7 @@ pub fn analyze(
         if max_link >= 100.0 && best > max_link * 1.5 {
             f.push(warn(
                 "net_speed_gt_link",
-                format!("Download {best:.0} > link {max_link:.0} Mbps — странно (или link неверн)"),
+                format!("Загрузка {best:.0} Mbps превышает указанную скорость интерфейса {max_link:.0} Mbps"),
             ));
         }
     }
@@ -593,7 +593,7 @@ pub fn analyze(
         if r > 2.0 && sys.uptime_sec > 120 {
             f.push(warn(
                 "load_high_idle",
-                format!("load/cores≈{r:.2} — нода шумная даже без нашего теста"),
+                format!("Отношение load average к числу vCPU: {r:.2}"),
             ));
         } else {
             f.push(info("load_ok", format!("load/cores≈{r:.2}")));
@@ -692,7 +692,7 @@ fn read_u64(path: &str) -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn parse_psi_some(path: &str) -> Option<f64> {
     let s = std::fs::read_to_string(path).ok()?;
-    // some avg10=0.00 avg60=0.00 avg300=0.00 total=...
+    
     for line in s.lines() {
         if line.starts_with("some") {
             for part in line.split_whitespace() {
@@ -720,7 +720,7 @@ fn read_cgroup_extras() -> (
     let mut mem_high = None;
     let mut io_max = None;
 
-    // v2 unified
+    
     if let Ok(stat) = fs::read_to_string("/sys/fs/cgroup/cpu.stat") {
         for line in stat.lines() {
             let mut sp = line.split_whitespace();
@@ -741,7 +741,7 @@ fn read_cgroup_extras() -> (
     }
     io_max = read_trim("/sys/fs/cgroup/io.max");
 
-    // try nested self path
+    
     if nr.is_none() {
         if let Ok(cg) = fs::read_to_string("/proc/self/cgroup") {
             for line in cg.lines() {
@@ -782,7 +782,7 @@ fn count_cpu_list(s: &str) -> Option<usize> {
     if s.is_empty() || s == "/" {
         return None;
     }
-    // strip cpuset path prefix like /0-3
+    
     let s = s.rsplit('/').next().unwrap_or(s);
     let mut n = 0usize;
     for part in s.split(',') {
