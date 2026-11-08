@@ -67,5 +67,28 @@
     "cpu_benchmark_version": "nmos-cpu-1",
     "disk_read_method": "O_DIRECT",
     "source_issue": 4
+  },
+  {
+    "schema": 1,
+    "provider": "Timeweb Cloud",
+    "region": "Moscow",
+    "plan": "Cloud MSK Ultra 40",
+    "tested_at": "2026-11-09",
+    "nmos_version": "0.3.2",
+    "cpu_model": "AMD EPYC-Rome Processor",
+    "vcpu": 2,
+    "ram_mb": 1907,
+    "cpu_single_ops_per_sec": 88854.25,
+    "cpu_multi_ops_per_sec": 171934.25,
+    "steal_percent_load": 0,
+    "disk_random_iops": 16909.778865669577,
+    "disk_random_p99_us": 104.929,
+    "network_download_mbps": 466.25627915966174,
+    "sqlite_single_tps": 839.632126199879,
+    "sqlite_four_tps": 931.6125821158987,
+    "sqlite_read_p99_ms": 0.017146,
+    "cpu_benchmark_version": "nmos-cpu-1",
+    "disk_read_method": "O_DIRECT",
+    "source_issue": 5
   }
 ]
