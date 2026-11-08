@@ -44,5 +44,28 @@
     "cpu_benchmark_version": "nmos-cpu-1",
     "disk_read_method": "O_DIRECT",
     "source_issue": 3
+  },
+  {
+    "schema": 1,
+    "provider": "aeza",
+    "region": "SWE-1",
+    "plan": "SWE-1",
+    "tested_at": "2026-11-08",
+    "nmos_version": "0.3.2",
+    "cpu_model": "AMD Ryzen 9 7950X3D 16-Core Processor",
+    "vcpu": 1,
+    "ram_mb": 1973,
+    "cpu_single_ops_per_sec": 127974.25,
+    "cpu_multi_ops_per_sec": 126871.5,
+    "steal_percent_load": 0,
+    "disk_random_iops": 21430.550346159893,
+    "disk_random_p99_us": 134.018,
+    "network_download_mbps": 549.204728,
+    "sqlite_single_tps": 2801.5791349574415,
+    "sqlite_four_tps": 2610.1867292870647,
+    "sqlite_read_p99_ms": 0.013747,
+    "cpu_benchmark_version": "nmos-cpu-1",
+    "disk_read_method": "O_DIRECT",
+    "source_issue": 4
   }
 ]
