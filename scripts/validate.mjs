@@ -7,7 +7,7 @@ const required = ['schema', 'provider', 'region', 'plan', 'tested_at', 'nmos_ver
 function fail(message) { throw new Error(message); }
 function checkText(value, field, max) {
   if (typeof value !== 'string' || [...value].length > max || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) fail(`Недопустимое поле ${field}`);
-  if (/https?:|www\.|[^\s@]+@[^\s@]+\.[^\s@]+|[\\/]/iu.test(value)) fail(`Ссылка или адрес в поле ${field}`);
+  if (/https?:|www\.|[^\s@]+@[^\s@]+\.[^\s@]+|\\/iu.test(value)) fail(`Ссылка или адрес в поле ${field}`);
   for (const word of value.split(/[\s,;()[\]]+/u)) if (net.isIP(word) || /(?:\d{1,3}\.){3}\d{1,3}/u.test(word)) fail(`Адрес в поле ${field}`);
 }
 
