@@ -10,6 +10,14 @@
 curl -fsSL https://github.com/rawfast-net/nmos/releases/latest/download/install-release.sh | bash
 ```
 
+После установки проверка запустится автоматически.
+
+Если `curl` ещё не установлен, запустите установку через `wget`:
+
+```bash
+wget -qO- https://github.com/rawfast-net/nmos/releases/latest/download/install-release.sh | bash
+```
+
 ## Проверка сервера
 
 ```bash

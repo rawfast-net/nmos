@@ -62,11 +62,31 @@ function render() {
 }
 search.addEventListener('input', render);
 sort.addEventListener('change', render);
-fetch('./data/results.json').then(response => {
-  if (!response.ok) throw new Error('data unavailable');
-  return response.json();
-}).then(data => {
-  if (!Array.isArray(data)) throw new Error('invalid data');
-  results = data.filter(r => r && r.schema === 1 && typeof r.provider === 'string');
-  render();
-}).catch(() => { count.textContent = '—'; status.hidden = false; status.textContent = 'Не удалось загрузить результаты. Попробуйте обновить страницу.'; });
+let lastData = null;
+let loading = false;
+async function loadResults() {
+  if (loading) return;
+  loading = true;
+  try {
+    const response = await fetch(`./data/results.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error('data unavailable');
+    const data = await response.json();
+    if (!Array.isArray(data)) throw new Error('invalid data');
+    const serialized = JSON.stringify(data);
+    if (serialized !== lastData) {
+      lastData = serialized;
+      results = data.filter(r => r && r.schema === 1 && typeof r.provider === 'string');
+      render();
+    }
+  } catch {
+    if (lastData === null) {
+      count.textContent = '—';
+      status.hidden = false;
+      status.textContent = 'Не удалось загрузить результаты. Попробуйте обновить страницу.';
+    }
+  } finally {
+    loading = false;
+  }
+}
+loadResults();
+setInterval(loadResults, 60000);

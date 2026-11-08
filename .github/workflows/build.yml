@@ -26,12 +26,13 @@ jobs:
             echo "Тег не совпадает с версией в Cargo.toml" >&2
             exit 1
           fi
-      - run: node --test scripts/moderate.test.mjs
+      - run: node --test scripts/moderate.test.mjs scripts/site.test.mjs
       - run: cargo test --locked
       - run: cargo build --release --locked
       - run: |
           bash -n install.sh
           cat install.sh | bash -s -- --help
+          bash scripts/test-install.sh
           target/release/nmos --monitor --monitor-count 1 --monitor-interval 1 > monitor.jsonl
           target/release/nmos --offline --skip-stress --skip-speed --skip-disk --skip-mem --db-bench --db-dir /tmp --db-mb 1 --db-operations 20 --json > report.json
           python3 -c 'import json; r=json.load(open("report.json")); assert r["db_bench"]["result"]["four_writers"]["completed"] == 20; assert "trust" not in r'
