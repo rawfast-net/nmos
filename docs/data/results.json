@@ -1,1 +1,25 @@
-[]
+[
+  {
+    "schema": 1,
+    "provider": "aeza",
+    "region": "msk-1",
+    "plan": "msk-1",
+    "tested_at": "2026-11-08",
+    "nmos_version": "0.3.1",
+    "cpu_model": "AMD Ryzen 9 9950X 16-Core Processor",
+    "vcpu": 1,
+    "ram_mb": 1973,
+    "cpu_single_ops_per_sec": 128631.75,
+    "cpu_multi_ops_per_sec": 128288,
+    "steal_percent_load": 0,
+    "disk_random_iops": 13822.348215565893,
+    "disk_random_p99_us": 905.1690000000001,
+    "network_download_mbps": 5389.12744,
+    "sqlite_single_tps": null,
+    "sqlite_four_tps": null,
+    "sqlite_read_p99_ms": null,
+    "cpu_benchmark_version": "nmos-cpu-1",
+    "disk_read_method": "O_DIRECT",
+    "source_issue": 2
+  }
+]
