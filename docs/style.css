@@ -15,6 +15,10 @@ a:hover { text-decoration: none; }
 .brand { color: #222; font-size: 20px; font-weight: 700; text-decoration: none; }
 nav { display: flex; gap: 24px; font-size: 14px; }
 main { padding-top: 48px; }
+.start { padding: 20px 24px; margin-bottom: 48px; border: 1px solid #ddd; background: #f7f7f7; }
+.start p:last-child { margin-bottom: 0; }
+.start pre { overflow-x: auto; padding: 14px 16px; background: #222; color: #fff; font-size: 13px; }
+.start code { overflow-wrap: anywhere; }
 h1 { margin: 0 0 8px; font-size: 30px; line-height: 1.2; }
 h2 { font-size: 22px; }
 p { margin: 0 0 16px; }

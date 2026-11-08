@@ -13,6 +13,7 @@
     <div class="container header-inner">
       <a class="brand" href="./">nmos</a>
       <nav aria-label="Навигация">
+        <a href="#start">Запуск nmos</a>
         <a href="#results">Результаты</a>
         <a href="#add">Добавить результат</a>
         <a href="https://github.com/rawfast-net/nmos">GitHub</a>
@@ -22,6 +23,14 @@
   </header>
 
   <main class="container">
+    <section id="start" class="start">
+      <h1>Как запустить nmos</h1>
+      <p>Подключитесь к своему VDS по SSH и выполните команду в терминале сервера:</p>
+      <pre><code>curl -fsSL https://github.com/rawfast-net/nmos/releases/latest/download/install-release.sh | bash</code></pre>
+      <p>Установщик загрузит nmos и сразу запустит проверку. Готовая сборка рассчитана на Linux x86_64 с glibc 2.35 или новее. Для повторной проверки введите <code>nmos</code>.</p>
+      <p>Проверка выполняется на сервере: HTML-страница показывает результаты, но не может измерить ресурсы VDS из браузера.</p>
+    </section>
+
     <section id="results">
       <h1>Результаты проверки VDS</h1>
       <p class="intro">Результаты тестов, отправленные пользователями nmos. Проект <a href="https://rawfast.net">rawfast.net</a>.</p>
