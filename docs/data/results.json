@@ -90,5 +90,28 @@
     "cpu_benchmark_version": "nmos-cpu-1",
     "disk_read_method": "O_DIRECT",
     "source_issue": 5
+  },
+  {
+    "schema": 1,
+    "provider": "rawfast.net",
+    "region": "moscow",
+    "plan": "1 ядер CPU, 2 ГБ памяти, 40 ГБ диска,  до 1 Гбит/с",
+    "tested_at": "2026-11-09",
+    "nmos_version": "0.3.2",
+    "cpu_model": "Intel(R) Xeon(R) Gold 6148 CPU @ 2.40GHz",
+    "vcpu": 1,
+    "ram_mb": 1955,
+    "cpu_single_ops_per_sec": 94526.75,
+    "cpu_multi_ops_per_sec": 94571.25,
+    "steal_percent_load": 0,
+    "disk_random_iops": 37144.95463055751,
+    "disk_random_p99_us": 45.092999999999996,
+    "network_download_mbps": 546.4934768040274,
+    "sqlite_single_tps": null,
+    "sqlite_four_tps": null,
+    "sqlite_read_p99_ms": null,
+    "cpu_benchmark_version": "nmos-cpu-1",
+    "disk_read_method": "O_DIRECT",
+    "source_issue": 7
   }
 ]
