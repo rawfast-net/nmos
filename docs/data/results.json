@@ -113,5 +113,28 @@
     "cpu_benchmark_version": "nmos-cpu-1",
     "disk_read_method": "O_DIRECT",
     "source_issue": 7
+  },
+  {
+    "schema": 1,
+    "provider": "hostkey",
+    "region": "fin",
+    "plan": "",
+    "tested_at": "2026-11-15",
+    "nmos_version": "0.4.0",
+    "cpu_model": "AMD EPYC 9554 64-Core Processor",
+    "vcpu": 2,
+    "ram_mb": 3910,
+    "cpu_single_ops_per_sec": 98161.14764022638,
+    "cpu_multi_ops_per_sec": 193953.7682393791,
+    "steal_percent_load": 0,
+    "disk_random_iops": 6711.785596623468,
+    "disk_random_p99_us": 263.982,
+    "network_download_mbps": null,
+    "sqlite_single_tps": null,
+    "sqlite_four_tps": null,
+    "sqlite_read_p99_ms": null,
+    "cpu_benchmark_version": "nmos-cpu-2",
+    "disk_read_method": "O_DIRECT",
+    "source_issue": 8
   }
 ]
