@@ -12,6 +12,7 @@ pub struct DiskIoResult {
     pub write_mbps: Option<f64>,
     pub read_mbps: Option<f64>,
     pub fsync_latency_us_avg: Option<f64>,
+    pub fsync_latency_us_p95: Option<f64>,
     pub fsync_samples: u32,
     pub verify_ok: Option<bool>,
     pub checksum_expected: Option<u64>,
@@ -20,6 +21,7 @@ pub struct DiskIoResult {
     pub looks_like_ramdisk: bool,
     pub rand_read_iops: Option<f64>,
     pub rand_read_lat_us_p99: Option<f64>,
+    pub rand_read_lat_us_p50: Option<f64>,
     pub notes: Vec<String>,
 }
 
@@ -43,11 +45,11 @@ pub fn run(size_mb: u64) -> DiskIoResult {
     };
 
     
-    let (fsync_avg, fsync_n) = match fsync_latency(&path, 32) {
-        Ok((avg, n)) => (Some(avg), n),
+    let (fsync_avg, fsync_p95, fsync_n) = match fsync_latency(&path, 32) {
+        Ok((avg, p95, n)) => (Some(avg), Some(p95), n),
         Err(e) => {
             notes.push(format!("fsync error: {e}"));
-            (None, 0)
+            (None, None, 0)
         }
     };
 
@@ -101,15 +103,15 @@ pub fn run(size_mb: u64) -> DiskIoResult {
         }
     }
 
-    let (rand_read_iops, rand_read_lat_us_p99) = match random_read_4k(&path, size_mb as usize, &mut notes)
+    let (rand_read_iops, rand_read_lat_us_p50, rand_read_lat_us_p99) = match random_read_4k(&path, size_mb as usize, &mut notes)
     {
-        Ok((iops, p99)) => {
-            notes.push(format!("Random 4K read ≈ {iops:.0} IOPS (p99 {p99:.0} µs)"));
-            (Some(iops), Some(p99))
+        Ok((iops, p50, p99)) => {
+            notes.push(format!("Random 4K read ≈ {iops:.0} IOPS (p50 {p50:.0} µs, p99 {p99:.0} µs)"));
+            (Some(iops), Some(p50), Some(p99))
         }
         Err(e) => {
             notes.push(format!("random 4K: {e}"));
-            (None, None)
+            (None, None, None)
         }
     };
 
@@ -121,6 +123,7 @@ pub fn run(size_mb: u64) -> DiskIoResult {
         write_mbps,
         read_mbps,
         fsync_latency_us_avg: fsync_avg,
+        fsync_latency_us_p95: fsync_p95,
         fsync_samples: fsync_n,
         verify_ok,
         checksum_expected,
@@ -128,6 +131,7 @@ pub fn run(size_mb: u64) -> DiskIoResult {
         looks_like_ramdisk,
         rand_read_iops,
         rand_read_lat_us_p99,
+        rand_read_lat_us_p50,
         notes,
     }
 }
@@ -259,20 +263,25 @@ fn sequential_read(path: &PathBuf, bytes: usize) -> std::io::Result<f64> {
     Ok(read_mb / secs)
 }
 
-fn fsync_latency(path: &PathBuf, samples: u32) -> std::io::Result<(f64, u32)> {
+fn fsync_latency(path: &PathBuf, samples: u32) -> std::io::Result<(f64, f64, u32)> {
     let mut f = OpenOptions::new().create(true).append(true).open(path)?;
     let block = vec![0x5Au8; 4096];
     let mut total_us = 0.0f64;
     let mut n = 0u32;
+    let mut latencies = Vec::with_capacity(samples as usize);
     for _ in 0..samples {
         let t0 = Instant::now();
         f.write_all(&block)?;
         f.sync_data()?;
-        total_us += t0.elapsed().as_secs_f64() * 1_000_000.0;
+        let elapsed = t0.elapsed().as_secs_f64() * 1_000_000.0;
+        total_us += elapsed;
+        latencies.push(elapsed);
         n += 1;
     }
     let _ = f.seek(SeekFrom::End(0));
-    Ok((total_us / n as f64, n))
+    latencies.sort_by(|a, b| a.total_cmp(b));
+    let p95 = latencies[((n as f64 * 0.95).ceil() as usize).saturating_sub(1)];
+    Ok((total_us / n as f64, p95, n))
 }
 
 
@@ -280,7 +289,7 @@ fn random_read_4k(
     path: &PathBuf,
     size_mb: usize,
     notes: &mut Vec<String>,
-) -> std::io::Result<(f64, f64)> {
+) -> std::io::Result<(f64, f64, f64)> {
     let file_bytes = (size_mb as u64) * 1024 * 1024;
     let blocks = (file_bytes / 4096).max(1);
     let samples = 512u32.min(blocks as u32).max(64);
@@ -310,7 +319,7 @@ fn random_read_4k(
     lats.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let idx = ((lats.len() as f64) * 0.99) as usize;
     let p99 = lats[idx.min(lats.len() - 1)];
-    Ok((iops, p99))
+    Ok((iops, lats[lats.len() / 2], p99))
 }
 
 fn open_for_cold_read(path: &PathBuf, notes: &mut Vec<String>) -> std::io::Result<File> {

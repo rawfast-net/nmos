@@ -44,6 +44,11 @@ pub struct AntifraudReport {
     pub checklist: Vec<ChecklistItem>,
     pub claims_used: bool,
     pub advice: Vec<String>,
+    pub cpu_claim_verdict: String,
+    pub cpu_claim_confidence: String,
+    pub cpu_confirmed: Vec<String>,
+    pub cpu_contradicted: Vec<String>,
+    pub cpu_unverified: Vec<String>,
 }
 
 pub fn build(
@@ -65,16 +70,17 @@ pub fn build(
     let claims_used = claims.any();
 
     if let Some(ref claimed) = claims.cpu_model {
-        let ok = crate::catalog::claim_matches_actual(claimed, &cpu.model);
-        if ok {
-            checklist.push(item("CPU модель", "pass", format!("«{claimed}» ≈ «{}»", cpu.model)));
-        } else {
-            checklist.push(item(
-                "CPU модель",
-                "fail",
-                format!("Продали «{claimed}», в системе «{}»", cpu.model),
-            ));
-            score -= 25.0;
+        match crate::catalog::compare_claim_model(claimed, &cpu.model) {
+            crate::catalog::ClaimModelMatch::Confirmed => {
+                checklist.push(item("CPU модель", "pass", format!("Заявлено «{claimed}»; такое имя видит гостевая ОС. Физический CPU этим не подтверждён")));
+            }
+            crate::catalog::ClaimModelMatch::Contradicted => {
+                checklist.push(item("CPU модель", "warn", format!("Заявлено «{claimed}»; гостевая ОС показывает «{}». Требуется уточнение у провайдера", cpu.model)));
+                score -= 8.0;
+            }
+            crate::catalog::ClaimModelMatch::Unverifiable => {
+                checklist.push(item("CPU модель", "skip", format!("Заявлено «{claimed}»; видимое имя «{}» не позволяет однозначно сверить модель", cpu.model)));
+            }
         }
     } else {
         checklist.push(item(
@@ -87,40 +93,34 @@ pub fn build(
     if let Some(claim_c) = claims.cores {
         let fact = cpu.logical_cores;
         let quota = deep.cgroup.cpu_quota_cores;
-        if let Some(q) = quota {
-            if q + 0.2 < claim_c as f64 {
-                checklist.push(item(
-                    "Ядра / quota",
-                    "fail",
-                    format!("Продали {claim_c}, cgroup quota ≈ {q:.2}, видно {fact}"),
-                ));
-                score -= 30.0;
-            } else if fact < claim_c {
-                checklist.push(item(
-                    "Ядра / quota",
-                    "fail",
-                    format!("Продали {claim_c}, видно только {fact}"),
-                ));
-                score -= 25.0;
-            } else {
-                checklist.push(item(
-                    "Ядра / quota",
-                    "pass",
-                    format!("Продали {claim_c}, видно {fact}, quota≈{q:.2}"),
-                ));
-            }
-        } else if fact < claim_c {
+        let cpuset = deep.cgroup.cpuset_effective_count;
+        if fact < claim_c || cpuset.is_some_and(|count| count < claim_c) {
             checklist.push(item(
-                "Ядра",
+                "Доступные CPU",
                 "fail",
-                format!("Продали {claim_c} vCPU, система видит {fact}"),
+                format!("Заявлено {claim_c} vCPU; видно {fact}, эффективный cpuset: {}", cpuset.map_or("нет данных".into(), |n| n.to_string())),
             ));
             score -= 25.0;
+        } else if let Some(q) = quota {
+            if q + 0.2 < claim_c as f64 {
+                checklist.push(item(
+                    "Квота CPU",
+                    "warn",
+                    format!("Заявлено {claim_c} vCPU; видно {fact}, но квота ограничивает суммарное время CPU до {q:.2} ядра"),
+                ));
+                score -= 8.0;
+            } else {
+                checklist.push(item(
+                    "Доступные CPU",
+                    "pass",
+                    format!("Заявлено {claim_c} vCPU; видно {fact}, квота {q:.2} ядра"),
+                ));
+            }
         } else {
             checklist.push(item(
-                "Ядра",
+                "Доступные CPU",
                 "pass",
-                format!("Продали {claim_c}, видно {fact}"),
+                format!("Заявлено {claim_c} vCPU; видно {fact}. Квота не установлена или недоступна"),
             ));
         }
     } else {
@@ -138,46 +138,32 @@ pub fn build(
 
     match cpu_reality.consistency.as_str() {
         "fail" => {
-            checklist.push(item(
-                "CPU reality",
-                "fail",
-                format!(
-                    "{} · mismatches: {}",
-                    cpu_reality.decoded_uarch.clone().unwrap_or_else(|| "?".into()),
-                    cpu_reality.mismatches.len()
-                ),
-            ));
-            score -= 25.0;
+            let status = if cpu.virtualization.is_virtual { "warn" } else { "fail" };
+            checklist.push(item("Сверка CPUID", status, format!(
+                "{}: {}", cpu_reality.verdict, cpu_reality.contradictions.join("; ")
+            )));
+            score -= if status == "fail" { 20.0 } else { 8.0 };
         }
         "warn" => {
-            checklist.push(item(
-                "CPU reality",
-                "warn",
-                format!(
-                    "{} · {}",
-                    cpu_reality.decoded_uarch.clone().unwrap_or_else(|| "?".into()),
-                    cpu_reality.mismatches.first().cloned().unwrap_or_default()
-                ),
-            ));
-            score -= 10.0;
+            checklist.push(item("Сверка CPUID", "warn", format!(
+                "{}: {}", cpu_reality.verdict, cpu_reality.contradictions.join("; ")
+            )));
+            score -= 4.0;
+        }
+        "masked" => {
+            checklist.push(item("Сверка CPUID", "skip", format!(
+                "{}; скрыто {} признаков", cpu_reality.verdict, cpu_reality.masked.len()
+            )));
+        }
+        "unknown" => {
+            checklist.push(item("Сверка CPUID", "skip", cpu_reality.verdict.clone()));
         }
         _ => {
-            checklist.push(item(
-                "CPU reality",
-                "pass",
-                format!(
-                    "{} · ISA/tech согласованы ({})",
-                    cpu_reality.decoded_uarch.clone().unwrap_or_else(|| "n/a".into()),
-                    cpu_reality.confidence
-                ),
-            ));
+            checklist.push(item("Сверка CPUID", "pass", format!(
+                "{} ({})", cpu_reality.verdict, cpu_reality.confidence
+            )));
         }
     }
-    for m in cpu_reality.mismatches.iter().take(3) {
-        checklist.push(item("CPU mismatch", "fail", m.clone()));
-        score -= 5.0;
-    }
-
     for f in truth.findings.iter().filter(|f| {
         matches!(
             f.code.as_str(),
@@ -212,18 +198,18 @@ pub fn build(
 
     match truth.verdict_level.as_str() {
         "lie" => {
-            checklist.push(item("CPU: сравнение с ориентиром", "fail", truth.verdict.clone()));
+            checklist.push(item("Согласованность CPU", "fail", truth.verdict.clone()));
             score -= 30.0;
         }
         "suspect" => {
-            checklist.push(item("CPU: сравнение с ориентиром", "warn", truth.verdict.clone()));
+            checklist.push(item("Согласованность CPU", "warn", truth.verdict.clone()));
             score -= 12.0;
         }
         _ => {
             checklist.push(item(
-                "CPU: сравнение с ориентиром",
+                "Согласованность CPU",
                 "pass",
-                format!("Trust {:.0}/100 · {}", truth.trust_score, truth.verdict),
+                format!("Баллы правил {:.0}/100. {}", truth.trust_score, truth.verdict),
             ));
         }
     }
@@ -652,7 +638,29 @@ pub fn build(
             advice.push("retest at different times; low scaling alone does not establish overselling".into());
         }
     }
-    advice.push("trust=cpu passport; honesty=plan claims + checklist".into());
+    advice.push("Имя CPU и CPUID внутри VPS показывают виртуальное представление; физическую модель хоста подтвердит только провайдер".into());
+
+    let cpu_items: Vec<_> = checklist.iter()
+        .filter(|item| matches!(item.area.as_str(), "CPU модель" | "Доступные CPU" | "Квота CPU"))
+        .collect();
+    let cpu_confirmed: Vec<String> = cpu_items.iter()
+        .filter(|item| item.status == "pass")
+        .map(|item| item.detail.clone()).collect();
+    let cpu_contradicted: Vec<String> = cpu_items.iter()
+        .filter(|item| item.status == "fail")
+        .map(|item| item.detail.clone()).collect();
+    let cpu_unverified: Vec<String> = cpu_items.iter()
+        .filter(|item| matches!(item.status.as_str(), "skip" | "warn"))
+        .map(|item| item.detail.clone()).collect();
+    let cpu_claim_verdict = if claims.cores.is_none() && claims.cpu_model.is_none() {
+        "Нет заявленных параметров CPU для сравнения"
+    } else if !cpu_contradicted.is_empty() {
+        "Доступные CPU противоречат заявленному количеству"
+    } else if !cpu_unverified.is_empty() {
+        "Часть заявлений о CPU не подтверждена доступными данными"
+    } else {
+        "Видимые параметры CPU согласуются с заявлением; физическая модель не доказана"
+    }.to_string();
 
     AntifraudReport {
         honesty_score: score,
@@ -661,6 +669,11 @@ pub fn build(
         checklist,
         claims_used,
         advice,
+        cpu_claim_verdict,
+        cpu_claim_confidence: cpu_reality.confidence.clone(),
+        cpu_confirmed,
+        cpu_contradicted,
+        cpu_unverified,
     }
 }
 

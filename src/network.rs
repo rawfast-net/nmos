@@ -1,4 +1,5 @@
-﻿use serde::Serialize;
+use serde::Serialize;
+use rayon::prelude::*;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -14,6 +15,8 @@ pub struct NetworkInfo {
     pub resolved_region: String,
     pub dns_latency_ms: Option<f64>,
     pub latency_targets: Vec<LatencySample>,
+    pub quality: Vec<QualitySample>,
+    pub ipv6_egress: Option<Ipv6Egress>,
     pub speed: Option<SpeedResult>,
     pub notes: Vec<String>,
 }
@@ -38,12 +41,63 @@ pub struct LatencySample {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct QualitySample {
+    pub name: String,
+    pub host: String,
+    pub attempts: usize,
+    pub successful: usize,
+    pub median_ms: Option<f64>,
+    pub p95_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
+    pub loss_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Ipv6Egress {
+    pub connected: bool,
+    pub local_address: Option<String>,
+    pub latency_ms: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct SpeedResult {
+    pub backend: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub server_name: Option<String>,
+    pub server_city: Option<String>,
+    pub server_country: Option<String>,
+    pub server_id: Option<u64>,
+    pub ping_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
+    pub packet_loss_percent: Option<f64>,
+    pub result_url: Option<String>,
+    pub tested_at: Option<String>,
+    pub attempts: Vec<SpeedAttempt>,
+    pub measurements: Vec<SpeedMeasurement>,
     pub download_mbps: Vec<SpeedSample>,
     pub upload_mbps: Option<SpeedSample>,
     pub best_download_mbps: Option<f64>,
     pub avg_download_mbps: Option<f64>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpeedMeasurement {
+    pub download_mbps: f64,
+    pub upload_mbps: Option<f64>,
+    pub ping_ms: Option<f64>,
+    pub jitter_ms: Option<f64>,
+    pub packet_loss_percent: Option<f64>,
+    pub tested_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SpeedAttempt {
+    pub server_id: Option<u64>,
+    pub server_name: String,
+    pub status: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,9 +112,17 @@ pub struct SpeedSample {
 pub struct NetOptions {
     pub fetch_public_ip: bool,
     pub run_speed: bool,
-    pub speed_size_mb: u64,
     
     pub region: String,
+    pub run_quality: bool,
+    pub offline: bool,
+    pub speedtest_backend: String,
+    pub speedtest_server_id: Option<u64>,
+    pub speedtest_country: Option<String>,
+    pub speedtest_city: Option<String>,
+    pub speedtest_manual_country: bool,
+    pub speedtest_accept_terms: bool,
+    pub speedtest_repeat: bool,
 }
 
 pub fn collect(opts: NetOptions) -> NetworkInfo {
@@ -86,18 +148,40 @@ pub fn collect(opts: NetOptions) -> NetworkInfo {
     let geo_hint = geo.as_ref().map(|g| g.hint.clone());
     let country_code = geo.as_ref().and_then(|g| g.country_code.clone());
 
-    let region = resolve_region(&opts.region, country_code.as_deref(), &mut notes);
-
-    let dns_host = if region == "intl" {
-        "cloudflare.com"
+    let region = if opts.offline && opts.region == "auto" {
+        notes.push("Offline: выбран регион intl без сетевого определения".into());
+        "intl".into()
     } else {
-        "ya.ru"
+        resolve_region(&opts.region, country_code.as_deref(), &mut notes)
     };
-    let dns_latency_ms = measure_dns(dns_host);
-    let latency_targets = measure_latencies(&region);
+
+    let dns_host = if region == "ru" {
+        "ya.ru"
+    } else {
+        "cloudflare.com"
+    };
+    let dns_latency_ms = if opts.run_quality { measure_dns(dns_host) } else { None };
+    let latency_targets = if opts.run_quality { measure_latencies(&region) } else { Vec::new() };
+    let quality = if opts.run_quality { measure_quality(&region) } else { Vec::new() };
+    let ipv6_egress = if opts.run_quality { Some(measure_ipv6_egress()) } else { None };
 
     let speed = if opts.run_speed {
-        Some(run_speed_test(opts.speed_size_mb, &region, &mut notes))
+        Some(crate::speedtest::run(crate::speedtest::SpeedOptions {
+            backend: opts.speedtest_backend,
+            region: region.clone(),
+            country: opts.speedtest_country.or_else(|| {
+                if opts.speedtest_manual_country && region.len() == 2 { Some(region.clone()) }
+                else { geo.as_ref().and_then(|g| g.country_code.clone()) }
+            }),
+            city: opts.speedtest_city.or_else(|| {
+                if opts.speedtest_manual_country { None }
+                else { geo.as_ref().and_then(|g| g.city.clone()) }
+            }),
+            manual_country: opts.speedtest_manual_country,
+            server_id: opts.speedtest_server_id,
+            accept_terms: opts.speedtest_accept_terms,
+            repeat_suspicious: opts.speedtest_repeat,
+        }))
     } else {
         None
     };
@@ -111,6 +195,8 @@ pub fn collect(opts: NetOptions) -> NetworkInfo {
         resolved_region: region,
         dns_latency_ms,
         latency_targets,
+        quality,
+        ipv6_egress,
         speed,
         notes,
     }
@@ -119,88 +205,34 @@ pub fn collect(opts: NetOptions) -> NetworkInfo {
 struct GeoInfo {
     hint: String,
     country_code: Option<String>,
+    city: Option<String>,
 }
 
 
 fn resolve_region(requested: &str, country_code: Option<&str>, notes: &mut Vec<String>) -> String {
-    let req = requested.to_lowercase();
-    match req.as_str() {
-        "intl" | "international" | "eu" | "us" => {
-            notes.push("Регион сети задан вручную: intl".into());
-            "intl".into()
-        }
-        "all" | "both" => {
-            notes.push("Регион сети задан вручную: all".into());
-            "all".into()
-        }
-        "ru" | "rf" | "russia" => {
-            notes.push("Регион сети задан вручную: ru (Selectel)".into());
-            "ru".into()
-        }
-        _ => {
-            
-            if is_cis_ru(country_code) {
-                notes.push(format!(
-                    "Авто-регион: ru (Selectel) — geo country={}",
-                    country_code.unwrap_or("?")
-                ));
-                "ru".into()
-            } else if country_code.is_some() {
-                notes.push(format!(
-                    "Авто-регион: intl (speedtest.net / зеркала) — сервер не в РФ (country={})",
-                    country_code.unwrap_or("?")
-                ));
-                "intl".into()
+    let requested = requested.trim().to_lowercase();
+    match requested.as_str() {
+        "auto" => {
+            if let Some(country) = country_code.filter(|value| value.len() == 2) {
+                notes.push(format!("Страна по IP-геолокации: {country}; при ошибке укажите --region"));
+                country.to_lowercase()
             } else {
-                
-                let ya = measure_tcp_host("ya.ru:443");
-                let cf = measure_tcp_host("1.1.1.1:443");
-                match (ya, cf) {
-                    (Some(ru_ms), Some(intl_ms)) if ru_ms + 40.0 < intl_ms => {
-                        notes.push(format!(
-                            "Авто-регион: ru — ya.ru {ru_ms:.0}мс < CF {intl_ms:.0}мс (geo недоступен)"
-                        ));
-                        "ru".into()
-                    }
-                    (Some(ru_ms), Some(intl_ms)) => {
-                        notes.push(format!(
-                            "Авто-регион: intl — CF {intl_ms:.0}мс ≤ ya.ru {ru_ms:.0}мс (geo недоступен)"
-                        ));
-                        "intl".into()
-                    }
-                    _ => {
-                        notes.push(
-                            "Авто-регион: intl по умолчанию (нет geo/latency) — для РФ укажите --region ru"
-                                .into(),
-                        );
-                        "intl".into()
-                    }
-                }
+                notes.push("IP-геолокация недоступна; выбор сервера ограничен списком Ookla".into());
+                "intl".into()
             }
         }
+        "russia" | "rf" => "ru".into(),
+        "international" | "eu" | "us" | "all" | "both" | "intl" => "intl".into(),
+        value if value.len() == 2 && value.chars().all(|ch| ch.is_ascii_alphabetic()) => {
+            notes.push(format!("Страна задана вручную: {}", value.to_uppercase()));
+            value.into()
+        }
+        _ => {
+            notes.push(format!("Неизвестный регион «{requested}»; страна не ограничена"));
+            "intl".into()
+        }
     }
 }
-
-fn is_cis_ru(code: Option<&str>) -> bool {
-    matches!(
-        code.map(|c| c.to_uppercase()).as_deref(),
-        Some("RU") | Some("BY") | Some("KZ") | Some("UA") | Some("UZ") | Some("AM") | Some("KG") | Some("TJ") | Some("MD") | Some("AZ")
-    )
-}
-
-fn measure_tcp_host(host: &str) -> Option<f64> {
-    if host.chars().next()?.is_ascii_digit() {
-        return measure_tcp(host);
-    }
-    let start = Instant::now();
-    let ok = host
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut a| a.next())
-        .and_then(|addr| TcpStream::connect_timeout(&addr, Duration::from_secs(3)).ok());
-    ok.map(|_| start.elapsed().as_secs_f64() * 1000.0)
-}
-
 fn collect_interfaces(notes: &mut Vec<String>) -> Vec<Iface> {
     #[cfg(target_os = "linux")]
     {
@@ -478,6 +510,7 @@ fn fetch_geo_full() -> Option<GeoInfo> {
     Some(GeoInfo {
         hint: format!("{city}, {country} · {isp} {asn}").trim().to_string(),
         country_code,
+        city: if city == "?" { None } else { Some(city.to_string()) },
     })
 }
 
@@ -512,13 +545,13 @@ fn measure_latencies(region: &str) -> Vec<LatencySample> {
     ];
 
     let targets: Vec<(&str, &str)> = match region {
-        "intl" => intl.to_vec(),
+        "ru" => ru.to_vec(),
         "all" => {
             let mut v = ru.to_vec();
             v.extend(intl);
             v
         }
-        _ => ru.to_vec(), 
+        _ => intl.to_vec(),
     };
 
     targets
@@ -546,661 +579,41 @@ fn measure_latencies(region: &str) -> Vec<LatencySample> {
         .collect()
 }
 
-fn run_speed_test(size_mb: u64, region: &str, notes: &mut Vec<String>) -> SpeedResult {
-    let size_mb = size_mb.clamp(10, 500);
-    notes.push(format!("Регион speed-теста: {region}"));
-
-    
-    if region == "intl" || region == "all" {
-        if let Some(r) = try_banal_speedtest(notes) {
-            if region == "intl" {
-                return r;
-            }
-            
-            let mut combined = r;
-            notes.push("ALL: + Selectel download".into());
-            let sel = run_mirror_downloads(size_mb, "ru", notes);
-            combined.download_mbps.extend(sel.download_mbps);
-            combined.notes.extend(sel.notes);
-            let best = combined
-                .download_mbps
-                .iter()
-                .map(|s| s.mbps)
-                .fold(None, |acc: Option<f64>, v| {
-                    Some(acc.map_or(v, |a| a.max(v)))
-                });
-            let avg = if combined.download_mbps.is_empty() {
-                None
-            } else {
-                Some(
-                    combined.download_mbps.iter().map(|s| s.mbps).sum::<f64>()
-                        / combined.download_mbps.len() as f64,
-                )
-            };
-            combined.best_download_mbps = best;
-            combined.avg_download_mbps = avg;
-            return combined;
-        }
-        notes.push(
-            "speedtest не найден — fallback на wget/curl зеркала (Cloudflare/Hetzner/OVH)"
-                .into(),
-        );
-        notes.push(
-            "Поставьте: curl -s https://packagecloud.io/install/repositories/ookla/speedtest-cli/script.deb.sh | bash && apt install speedtest"
-                .into(),
-        );
-        notes.push("или: apt install speedtest-cli / pip install speedtest-cli".into());
-    }
-
-    if region == "ru" || region == "all" {
-        notes.push("RU: Selectel через wget -O /dev/null (как в доке Selectel)".into());
-    }
-
-    if !has_curl() && !has_wget() {
-        notes.push("Нужен wget/curl или speedtest для замера скорости".into());
-        return SpeedResult {
-            download_mbps: vec![],
-            upload_mbps: None,
-            best_download_mbps: None,
-            avg_download_mbps: None,
-            notes: vec!["Установите speedtest (зарубеж) или wget (РФ/Selectel)".into()],
-        };
-    }
-
-    run_mirror_downloads(size_mb, region, notes)
-}
-
-fn run_mirror_downloads(size_mb: u64, region: &str, _notes: &mut Vec<String>) -> SpeedResult {
-    let downloads = speed_mirrors(size_mb, region);
-    let mut samples = Vec::new();
-    let mut speed_notes = Vec::new();
-
-    for (label, url) in &downloads {
-        eprint!("    ↓ {label} ... ");
-        let is_selectel = url.contains("speedtest.selectel.ru");
-        let result = if is_selectel && has_wget() {
-            wget_download_mbps(url)
-        } else {
-            curl_download_mbps(url).or_else(|| {
-                if has_wget() {
-                    wget_download_mbps(url)
-                } else {
-                    None
-                }
-            })
-        };
-        match result {
-            Some(s) => {
-                eprintln!("{:.1} Mbps", s.mbps);
-                samples.push(SpeedSample {
-                    label: label.clone(),
-                    url: url.clone(),
-                    mbps: s.mbps,
-                    bytes: s.bytes,
-                    seconds: s.seconds,
-                });
-            }
-            None => {
-                eprintln!("ошибка");
-                speed_notes.push(format!("{label}: не удалось скачать"));
+fn measure_quality(region: &str) -> Vec<QualitySample> {
+    let targets = if region == "ru" {
+        [("Yandex", "ya.ru:443"), ("Selectel", "selectel.ru:443"), ("Cloudflare", "1.1.1.1:443")]
+    } else {
+        [("Cloudflare", "1.1.1.1:443"), ("Google", "8.8.8.8:443"), ("GitHub", "github.com:443")]
+    };
+    targets.par_iter().map(|&(name, host)| {
+        let resolved: Vec<_> = host.to_socket_addrs().map(|a| a.collect()).unwrap_or_default();
+        let mut samples = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            if resolved.iter().any(|addr| TcpStream::connect_timeout(addr, Duration::from_millis(1200)).is_ok()) {
+                samples.push(start.elapsed().as_secs_f64() * 1000.0);
             }
         }
-    }
-
-    let upload = if region == "ru" {
-        eprint!("    ↑ Upload ... ");
-        eprintln!("пропуск (Selectel — только download)");
-        speed_notes.push("Upload в ru: ориентируйтесь на ↓ Selectel".into());
-        None
-    } else if region == "intl" || region == "all" {
-        eprint!("    ↑ Upload ... ");
-        let upload = curl_upload_mbps(10, "intl");
-        match &upload {
-            Some(s) => eprintln!("{}: {:.1} Mbps", s.label, s.mbps),
-            None => {
-                eprintln!("ошибка / недоступно");
-                speed_notes.push("Upload: не удалось измерить".into());
-            }
-        }
-        upload
-    } else {
-        None
-    };
-
-    let best = samples
-        .iter()
-        .map(|s| s.mbps)
-        .fold(None, |acc: Option<f64>, v| Some(acc.map_or(v, |a| a.max(v))));
-    let avg = if samples.is_empty() {
-        None
-    } else {
-        Some(samples.iter().map(|s| s.mbps).sum::<f64>() / samples.len() as f64)
-    };
-
-    SpeedResult {
-        download_mbps: samples,
-        upload_mbps: upload,
-        best_download_mbps: best,
-        avg_download_mbps: avg,
-        notes: speed_notes,
-    }
+        let successful = samples.len();
+        let jitter_ms = if successful > 1 {
+            Some(samples.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (successful - 1) as f64)
+        } else { None };
+        samples.sort_by(|a, b| a.total_cmp(b));
+        let median_ms = if successful > 0 { Some(samples[successful / 2]) } else { None };
+        let p95_ms = if successful > 0 { Some(samples[((successful as f64 * 0.95).ceil() as usize).saturating_sub(1)]) } else { None };
+        QualitySample { name: name.into(), host: host.into(), attempts: 5, successful, median_ms, p95_ms, jitter_ms, loss_percent: (5 - successful) as f64 * 20.0 }
+    }).collect()
 }
 
-
-fn try_banal_speedtest(notes: &mut Vec<String>) -> Option<SpeedResult> {
-    if let Some(r) = run_ookla_speedtest() {
-        notes.push("INTL: Ookla speedtest CLI".into());
-        return Some(r);
-    }
-    if let Some(r) = run_speedtest_cli() {
-        notes.push("INTL: speedtest-cli".into());
-        return Some(r);
-    }
-    None
-}
-
-fn run_ookla_speedtest() -> Option<SpeedResult> {
-    
-    
-    let probe = Command::new("speedtest")
-        .args(["--version"])
-        .output()
-        .ok()?;
-    let ver = format!(
-        "{}{}",
-        String::from_utf8_lossy(&probe.stdout),
-        String::from_utf8_lossy(&probe.stderr)
-    )
-    .to_lowercase();
-    
-    let looks_ookla = ver.contains("ookla") || ver.contains("speedtest by");
-    let looks_python = ver.contains("speedtest-cli") || ver.contains("python");
-    if looks_python && !looks_ookla {
-        return None;
-    }
-
-    eprint!("    ↓ Ookla speedtest ... ");
-    let out = Command::new("speedtest")
-        .args([
-            "--format=json",
-            "--accept-license",
-            "--accept-gdpr",
-            "--progress=no",
-        ])
-        .output()
-        .ok()?;
-    let out = if out.status.success()
-        && serde_json::from_slice::<serde_json::Value>(&out.stdout)
-            .ok()
-            .and_then(|v| v.pointer("/download/bandwidth").cloned())
-            .is_some()
-    {
-        out
-    } else {
-        Command::new("speedtest")
-            .args(["-f", "json", "--accept-license", "--accept-gdpr"])
-            .output()
-            .ok()?
-    };
-    if !out.status.success() {
-        eprintln!("ошибка");
-        return None;
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    if v.pointer("/download/bandwidth").is_none() {
-        eprintln!("не Ookla JSON");
-        return None;
-    }
-    
-    let down_bps = v.pointer("/download/bandwidth").and_then(|x| x.as_f64())?;
-    let up_bps = v.pointer("/upload/bandwidth").and_then(|x| x.as_f64());
-    let down_mbps = down_bps * 8.0 / 1_000_000.0;
-    let up_mbps = up_bps.map(|b| b * 8.0 / 1_000_000.0);
-    let server = v
-        .pointer("/server/name")
-        .and_then(|x| x.as_str())
-        .or_else(|| v.pointer("/server/host").and_then(|x| x.as_str()))
-        .unwrap_or("speedtest.net");
-    let loc = v
-        .pointer("/server/location")
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
-    let ping = v
-        .pointer("/ping/latency")
-        .and_then(|x| x.as_f64())
-        .map(|p| format!(" ping {p:.0}ms"))
-        .unwrap_or_default();
-    eprintln!("{down_mbps:.1} Mbps ({server} {loc}{ping})");
-
-    let sample = SpeedSample {
-        label: format!("speedtest.net ↓ ({server})"),
-        url: "ookla://speedtest".into(),
-        mbps: down_mbps,
-        bytes: 0,
-        seconds: 0.0,
-    };
-    let upload = up_mbps.map(|mbps| {
-        eprint!("    ↑ Ookla upload ... ");
-        eprintln!("{mbps:.1} Mbps");
-        SpeedSample {
-            label: format!("speedtest.net ↑ ({server})"),
-            url: "ookla://speedtest".into(),
-            mbps,
-            bytes: 0,
-            seconds: 0.0,
-        }
-    });
-
-    Some(SpeedResult {
-        download_mbps: vec![sample],
-        upload_mbps: upload,
-        best_download_mbps: Some(down_mbps),
-        avg_download_mbps: Some(down_mbps),
-        notes: vec![format!("Сервер: {server} {loc}{ping}")],
-    })
-}
-
-fn run_speedtest_cli() -> Option<SpeedResult> {
-    
-    let candidates = ["speedtest-cli", "speedtest"];
-    for bin in candidates {
-        let probe = Command::new(bin).args(["--version"]).output();
-        let Ok(probe) = probe else { continue };
-        let ver = format!(
-            "{}{}",
-            String::from_utf8_lossy(&probe.stdout),
-            String::from_utf8_lossy(&probe.stderr)
-        )
-        .to_lowercase();
-        
-        if ver.contains("ookla") {
-            continue;
-        }
-        
-        eprint!("    ↓ speedtest-cli ({bin}) ... ");
-        let out = Command::new(bin)
-            .args(["--json", "--secure"])
-            .output()
-            .ok();
-        let out = match out {
-            Some(o) if o.status.success() => o,
-            _ => match Command::new(bin).args(["--json"]).output().ok() {
-                Some(o) if o.status.success() => o,
-                _ => {
-                    eprintln!("ошибка");
-                    continue;
-                }
-            },
-        };
-        if let Some(r) = parse_speedtest_cli_json(&out.stdout) {
-            return Some(r);
-        }
-        eprintln!("не JSON speedtest-cli");
-    }
-    None
-}
-
-fn parse_speedtest_cli_json(stdout: &[u8]) -> Option<SpeedResult> {
-    let v: serde_json::Value = serde_json::from_slice(stdout).ok()?;
-    
-    if v.pointer("/download/bandwidth").is_some() {
-        return None;
-    }
-    let down_bits = v.get("download").and_then(|x| x.as_f64())?;
-    let up_bits = v.get("upload").and_then(|x| x.as_f64());
-    let down_mbps = down_bits / 1_000_000.0;
-    let up_mbps = up_bits.map(|b| b / 1_000_000.0);
-    let sponsor = v
-        .pointer("/server/sponsor")
-        .and_then(|x| x.as_str())
-        .unwrap_or("speedtest.net");
-    let name = v
-        .pointer("/server/name")
-        .and_then(|x| x.as_str())
-        .unwrap_or("");
-    eprintln!("{down_mbps:.1} Mbps ({sponsor} {name})");
-    if let Some(u) = up_mbps {
-        eprint!("    ↑ speedtest-cli upload ... ");
-        eprintln!("{u:.1} Mbps");
-    }
-
-    Some(SpeedResult {
-        download_mbps: vec![SpeedSample {
-            label: format!("speedtest-cli ↓ ({sponsor})"),
-            url: "speedtest-cli://".into(),
-            mbps: down_mbps,
-            bytes: 0,
-            seconds: 0.0,
-        }],
-        upload_mbps: up_mbps.map(|mbps| SpeedSample {
-            label: format!("speedtest-cli ↑ ({sponsor})"),
-            url: "speedtest-cli://".into(),
-            mbps,
-            bytes: 0,
-            seconds: 0.0,
-        }),
-        best_download_mbps: Some(down_mbps),
-        avg_download_mbps: Some(down_mbps),
-        notes: vec![format!("Сервер: {sponsor} / {name}")],
-    })
-}
-
-
-fn speed_mirrors(size_mb: u64, region: &str) -> Vec<(String, String)> {
-    
-    let mut selectel = vec![
-        (
-            "Selectel 10MB".into(),
-            "https://speedtest.selectel.ru/10MB".into(),
-        ),
-        (
-            "Selectel 100MB".into(),
-            "https://speedtest.selectel.ru/100MB".into(),
-        ),
-    ];
-    if size_mb >= 200 {
-        selectel.push((
-            "Selectel 1GB".into(),
-            "https://speedtest.selectel.ru/1GB".into(),
-        ));
-    }
-
-    let bytes_cf = size_mb * 1024 * 1024;
-    let hetzner_file = if size_mb >= 200 { "1GB.bin" } else { "100MB.bin" };
-    
-    let intl: Vec<(String, String)> = vec![
-        (
-            "Cloudflare".into(),
-            format!("https://speed.cloudflare.com/__down?bytes={bytes_cf}"),
-        ),
-        (
-            "Cachefly".into(),
-            "http://cachefly.cachefly.net/100mb.test".into(),
-        ),
-        (
-            "Hetzner NBG".into(),
-            format!("https://nbg1-speed.hetzner.com/{hetzner_file}"),
-        ),
-        (
-            "ThinkBroadband 100MB".into(),
-            "http://ipv4.download.thinkbroadband.com/100MB.zip".into(),
-        ),
-        (
-            "OVH".into(),
-            "https://proof.ovh.net/files/100Mb.dat".into(),
-        ),
-    ];
-
-    match region {
-        "intl" => intl,
-        "all" => {
-            let mut v = selectel;
-            v.extend(intl);
-            v
-        }
-        _ => selectel, 
-    }
-}
-
-fn has_curl() -> bool {
-    Command::new("curl")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn has_wget() -> bool {
-    Command::new("wget")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-struct CurlSpeed {
-    mbps: f64,
-    bytes: u64,
-    seconds: f64,
-}
-
-
-fn wget_download_mbps(url: &str) -> Option<CurlSpeed> {
-    let sink = null_sink();
-    let t0 = Instant::now();
-    let out = Command::new("wget")
-        .args([
-            "-O",
-            sink,
-            "--timeout=60",
-            "--tries=1",
-            "-q", 
-            url,
-        ])
-        .output()
-        .ok()?;
-    let secs = t0.elapsed().as_secs_f64().max(1e-6);
-    if !out.status.success() {
-        
-        let t1 = Instant::now();
-        let out2 = Command::new("wget")
-            .args(["-O", sink, "--timeout=60", "--tries=1", url])
-            .output()
-            .ok()?;
-        let secs2 = t1.elapsed().as_secs_f64().max(1e-6);
-        if !out2.status.success() {
-            return None;
-        }
-        let err = String::from_utf8_lossy(&out2.stderr);
-        if let Some(mbps) = parse_wget_speed(&err) {
-            return Some(CurlSpeed {
-                mbps,
-                bytes: 0,
-                seconds: secs2,
-            });
-        }
-        
-        let bytes = selectel_size_bytes(url).unwrap_or(10 * 1024 * 1024);
-        return Some(CurlSpeed {
-            mbps: (bytes as f64 * 8.0) / secs2 / 1_000_000.0,
-            bytes,
-            seconds: secs2,
-        });
-    }
-    let bytes = selectel_size_bytes(url).unwrap_or(0);
-    let mbps = if bytes > 0 {
-        (bytes as f64 * 8.0) / secs / 1_000_000.0
-    } else {
-        
-        return None;
-    };
-    Some(CurlSpeed {
-        mbps,
-        bytes,
-        seconds: secs,
-    })
-}
-
-fn selectel_size_bytes(url: &str) -> Option<u64> {
-    if url.ends_with("/10MB") {
-        Some(10 * 1024 * 1024)
-    } else if url.ends_with("/100MB") {
-        Some(100 * 1024 * 1024)
-    } else if url.ends_with("/1GB") {
-        Some(1024 * 1024 * 1024)
-    } else if url.ends_with("/10GB") {
-        Some(10 * 1024 * 1024 * 1024)
-    } else {
-        None
-    }
-}
-
-fn parse_wget_speed(stderr: &str) -> Option<f64> {
-    
-    let re_like = stderr.replace(',', ".");
-    for part in re_like.split_whitespace() {
-        let p = part.to_lowercase();
-        if let Some(n) = p.strip_suffix("mb/s") {
-            if let Ok(v) = n.parse::<f64>() {
-                return Some(v * 8.0); 
-            }
-        }
-        if let Some(n) = p.strip_suffix("kb/s") {
-            if let Ok(v) = n.parse::<f64>() {
-                return Some(v * 8.0 / 1000.0);
-            }
-        }
-    }
-    None
-}
-
-fn curl_download_mbps(url: &str) -> Option<CurlSpeed> {
-    
-    let (url, range) = if let Some((base, rest)) = url.split_once("#range=") {
-        let n: u64 = rest.parse().unwrap_or(0);
-        if n > 0 {
-            (base, Some(format!("0-{}", n.saturating_sub(1))))
-        } else {
-            (base, None)
-        }
-    } else {
-        (url, None)
-    };
-
-    let mut args = vec![
-        "-4".to_string(),
-        "-L".to_string(),
-        "-fsS".to_string(),
-        "--max-time".to_string(),
-        "90".to_string(),
-        "-o".to_string(),
-        null_sink().to_string(),
-        "-w".to_string(),
-        "%{speed_download} %{size_download} %{time_total}".to_string(),
-    ];
-    if let Some(r) = range {
-        args.push("-r".to_string());
-        args.push(r);
-    }
-    args.push(url.to_string());
-
-    let out = Command::new("curl").args(&args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_curl_speed(&String::from_utf8_lossy(&out.stdout))
-}
-
-fn curl_upload_mbps(size_mb: u64, region: &str) -> Option<SpeedSample> {
-    if region != "intl" && region != "all" {
-        return None;
-    }
-    curl_upload_cloudflare(size_mb)
-}
-
-fn curl_upload_cloudflare(size_mb: u64) -> Option<SpeedSample> {
-    let url = "https://speed.cloudflare.com/__up".to_string();
-
-    #[cfg(target_os = "linux")]
-    {
-        let cmd = format!(
-            "dd if=/dev/zero bs=1M count={size_mb} status=none 2>/dev/null | \
-             curl -4 -L -fsS --max-time 25 -X POST \
-             -H 'Content-Type: application/octet-stream' \
-             --data-binary @- -o /dev/null \
-             -w '%{{speed_upload}} %{{size_upload}} %{{time_total}}' \
-             '{url}'"
-        );
-        let out = Command::new("sh").args(["-c", &cmd]).output().ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let s = parse_curl_speed(&String::from_utf8_lossy(&out.stdout))?;
-        return Some(SpeedSample {
-            label: "Cloudflare CDN".into(),
-            url,
-            mbps: s.mbps,
-            bytes: s.bytes,
-            seconds: s.seconds,
-        });
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let bytes = size_mb * 1024 * 1024;
-        let tmp = std::env::temp_dir().join("nmos-up.bin");
-        let path = tmp.to_string_lossy().replace('\'', "''");
-        let ps = format!(
-            "$b = New-Object byte[] ({bytes}); [IO.File]::WriteAllBytes('{path}', $b)"
-        );
-        let _ = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps])
-            .output();
-        let out = Command::new("curl")
-            .args([
-                "-4",
-                "-L",
-                "-fsS",
-                "--max-time",
-                "25",
-                "-X",
-                "POST",
-                "-H",
-                "Content-Type: application/octet-stream",
-                "--data-binary",
-                &format!("@{}", tmp.display()),
-                "-o",
-                "NUL",
-                "-w",
-                "%{speed_upload} %{size_upload} %{time_total}",
-                &url,
-            ])
-            .output()
-            .ok();
-        let _ = std::fs::remove_file(&tmp);
-        let out = out?;
-        if !out.status.success() {
-            return None;
-        }
-        let s = parse_curl_speed(&String::from_utf8_lossy(&out.stdout))?;
-        return Some(SpeedSample {
-            label: "Cloudflare CDN".into(),
-            url,
-            mbps: s.mbps,
-            bytes: s.bytes,
-            seconds: s.seconds,
-        });
-    }
-
-    #[allow(unreachable_code)]
-    None
-}
-
-fn parse_curl_speed(s: &str) -> Option<CurlSpeed> {
-    let parts: Vec<&str> = s.trim().split_whitespace().collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let speed_bps: f64 = parts[0].parse().ok()?;
-    let bytes: f64 = parts[1].parse().ok()?;
-    let seconds: f64 = parts[2].parse().ok()?;
-    if speed_bps <= 0.0 || seconds <= 0.0 {
-        return None;
-    }
-    Some(CurlSpeed {
-        mbps: (speed_bps * 8.0) / 1_000_000.0,
-        bytes: bytes as u64,
-        seconds,
-    })
-}
-
-fn null_sink() -> &'static str {
-    #[cfg(target_os = "windows")]
-    {
-        "NUL"
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        "/dev/null"
+fn measure_ipv6_egress() -> Ipv6Egress {
+    let target = "[2606:4700:4700::1111]:443".parse().expect("valid IPv6 target");
+    let start = Instant::now();
+    match TcpStream::connect_timeout(&target, Duration::from_secs(2)) {
+        Ok(stream) => Ipv6Egress {
+            connected: true,
+            local_address: stream.local_addr().ok().map(|addr| addr.ip().to_string()),
+            latency_ms: Some(start.elapsed().as_secs_f64() * 1000.0),
+        },
+        Err(_) => Ipv6Egress { connected: false, local_address: None, latency_ms: None },
     }
 }

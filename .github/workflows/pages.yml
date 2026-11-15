@@ -1,4 +1,4 @@
-name: Deploy pages
+name: Обновление сайта
 on:
   push:
     branches: [main]

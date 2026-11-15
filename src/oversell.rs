@@ -37,11 +37,30 @@ pub fn analyze(_cpu: &CpuInfo, stress: Option<&StressResult>) -> OversellAnalysi
     let mut reasons = vec!["Коэффициент перепродажи и число физических ядер недоступны из гостевой ОС".into()];
     let (level, confidence, steal, scaling) = if let Some(s) = stress {
         if let Some(v) = s.steal_percent_load {
-            reasons.push(format!("Steal под многопоточной нагрузкой: {v:.2}% (среднее по vCPU гостя)"));
+            reasons.push(format!("Steal под многопоточной нагрузкой: {v:.2}% (медиана трёх замеров)"));
         } else { reasons.push("Steal под нагрузкой недоступен".into()); }
         reasons.push(format!("Масштабирование: {:.1}%; на него влияют SMT, частоты, квоты и характер теста", s.scaling_efficiency));
-        let level = if s.steal_percent_load.map_or(false, |v| v > 3.0) { "обнаружены признаки задержки CPU" } else if s.steal_percent_load.is_some() { "признаки задержки CPU по steal не обнаружены в этом тесте" } else { "недостаточно данных о steal" };
-        (level, "один краткий замер", s.steal_percent_load, Some((100.0-s.scaling_efficiency).max(0.0)))
+        reasons.push(format!("Разброс: один поток {:.1}%, все потоки {:.1}%", s.single_variation_percent, s.multi_variation_percent));
+        let throttle = s.cgroup_multi.as_ref().and_then(|d| {
+            if d.nr_periods == 0 { None } else { Some(d.nr_throttled as f64 / d.nr_periods as f64 * 100.0) }
+        });
+        if let Some(v) = throttle { reasons.push(format!("Ограничение cgroup сработало в {v:.1}% периодов многопоточного теста")); }
+        let unstable = s.single_variation_percent > 15.0 || s.multi_variation_percent > 15.0;
+        let level = if throttle.is_some_and(|v| v > 10.0) {
+            "обнаружено ограничение CPU по cgroup"
+        } else if s.steal_percent_load.is_some_and(|v| v > 5.0) {
+            "есть признаки задержек CPU по steal"
+        } else if unstable {
+            "результат нестабилен; повторите проверку"
+        } else if s.steal_percent_load.is_some() || throttle.is_some() {
+            "явных задержек CPU в этом запуске нет"
+        } else { "недостаточно данных о задержках CPU" };
+        let confidence = if unstable {
+            "низкая: большой разброс между повторами"
+        } else {
+            "ограниченная: три повтора в одном временном интервале"
+        };
+        (level, confidence, s.steal_percent_load, Some((100.0-s.scaling_efficiency).max(0.0)))
     } else {
         reasons.push("Стресс-тест пропущен; данных о нагрузке недостаточно".into());
         ("недостаточно данных", "недостаточно данных", None, None)
@@ -62,112 +81,15 @@ pub fn estimate_real_cpu(
         None => (None, None),
     };
 
-    let mut nearest = Vec::new();
-    let estimated_equivalent;
-    let estimated_tier;
-    let commentary;
-
-    if let (Some(st), Some(mt)) = (st, mt) {
-        let mut scored: Vec<CpuMatch> = catalog::benchmark_refs()
-            .into_iter()
-            .map(|(name, cores, rst, rmt)| {
-                let r_mt_per = rmt / cores.max(1) as f64;
-                let m_mt_per = mt / cpu.logical_cores.max(1) as f64;
-                
-                let core_pen = if cpu.logical_cores <= 4 && cores >= 8 {
-                    0.05
-                } else {
-                    0.35
-                };
-                let dist = (rst - st).abs() * 2.0
-                    + (r_mt_per - m_mt_per).abs() * 1.5
-                    + (cores as f64 - cpu.logical_cores as f64).abs() * core_pen;
-                CpuMatch {
-                    name: name.to_string(),
-                    cores,
-                    score_single: rst,
-                    score_multi: rmt,
-                    distance: dist,
-                }
-            })
-            .collect();
-        scored.sort_by(|a, b| a.distance.partial_cmp(&b.distance).unwrap());
-        nearest = scored.into_iter().take(8).collect();
-
-        
-        let cat = catalog::match_model(&cpu.model).filter(|c| c.expected_st.is_some());
-        let guest_tax = if cpu.virtualization.is_virtual { 0.82 } else { 1.0 };
-        let best = if catalog::match_model(&cpu.model).is_some_and(|c| c.expected_st.is_none()) {
-            nearest.clear();
-            None
-        } else if let Some(c) = cat {
-            let expect = c.expected_st.unwrap_or_default() * guest_tax;
-            let ratio = st / expect.max(1.0);
-            if ratio >= (1.0 - c.tol_low) {
-                Some(CpuMatch {
-                    name: format!("{} (vCPU slice)", c.name),
-                    cores: cpu.logical_cores.max(1),
-                    score_single: expect,
-                    score_multi: expect * cpu.logical_cores as f64 * 0.9,
-                    distance: 0.0,
-                })
-            } else if ratio >= 0.55 {
-                
-                Some(CpuMatch {
-                    name: format!("{} (ниже каталожного ориентира)", c.name),
-                    cores: cpu.logical_cores.max(1),
-                    score_single: expect,
-                    score_multi: st * cpu.logical_cores as f64,
-                    distance: 0.5,
-                })
-            } else {
-                nearest.first().cloned()
-            }
-        } else {
-            nearest.first().cloned()
-        };
-
-        
-        if let Some(ref b) = best {
-            if !nearest.iter().any(|n| n.name == b.name) {
-                nearest.insert(0, b.clone());
-                nearest.truncate(8);
-            } else {
-                nearest.retain(|n| n.name != b.name);
-                nearest.insert(0, b.clone());
-            }
-        }
-        estimated_equivalent = best
-            .as_ref()
-            .map(|m| {
-                format!(
-                    "{} (≈ {:.0}% ST по этому тесту)",
-                    m.name,
-                    (st / m.score_single.max(1.0)) * 100.0
-                )
-            })
-            .unwrap_or_else(|| "недостаточно данных".into());
-
-        estimated_tier = tier_from_scores(st, mt, cpu.logical_cores);
-        commentary = format!(
-            "st={st:.0} mt={mt:.0} статус={level}; \
-             advertised={advertised}{cat} → {eq}",
-            level = oversell.oversell_level,
-            cat = catalog_match
-                .as_ref()
-                .map(|c| format!(" [{c}]"))
-                .unwrap_or_default(),
-            eq = best.map(|m| m.name).unwrap_or_else(|| "?".into()),
-        );
-    } else {
-        estimated_equivalent = if cpu.virtualization.is_virtual {
-            format!("virtual ({advertised}), need stress")
-        } else {
-            advertised.clone()
-        };
-        estimated_tier = "unknown (no stress)".into();
-        commentary = "drop --skip-stress to estimate cpu equivalent".into();
-    }
+    let estimated_equivalent = "не определяется по тесту внутри гостевой ОС".into();
+    let estimated_tier = "нет проверенного эталона".into();
+    let commentary = match (st, mt) {
+        (Some(st), Some(mt)) => format!(
+            "ST={st:.0}, MT={mt:.0}; {}. Для сравнения нужны замеры той же версии теста с известной конфигурацией.",
+            oversell.oversell_level
+        ),
+        _ => "Нагрузочный тест пропущен; эквивалент физического CPU определить нельзя".into(),
+    };
 
     CpuEstimate {
         advertised_model: advertised,
@@ -176,26 +98,7 @@ pub fn estimate_real_cpu(
         estimated_tier,
         score_single: st,
         score_multi: mt,
-        nearest_matches: nearest,
+        nearest_matches: Vec::new(),
         commentary,
-    }
-}
-
-fn tier_from_scores(st: f64, mt: f64, threads: usize) -> String {
-    let per = mt / threads.max(1) as f64;
-    if st < 40.0 || per < 35.0 {
-        "низкий результат теста".into()
-    } else if st < 70.0 {
-        "результат ниже среднего".into()
-    } else if st < 100.0 {
-        "средний результат теста".into()
-    } else if st < 118.0 {
-        "результат выше среднего".into()
-    } else if st < 138.0 {
-        "высокий результат теста".into()
-    } else if st < 160.0 {
-        "высокий результат теста".into()
-    } else {
-        "высокий результат теста".into()
     }
 }

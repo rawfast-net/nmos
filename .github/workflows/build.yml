@@ -1,4 +1,4 @@
-name: Build Linux binary
+name: Сборка и проверка NMOS
 on:
   workflow_dispatch:
   push:

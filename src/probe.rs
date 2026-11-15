@@ -58,6 +58,14 @@ pub struct CpuIds {
     pub has_sha: bool,
     pub has_hypervisor_flag: bool,
     pub has_svm_or_vmx: bool,
+    pub raw_vendor: Option<String>,
+    pub raw_family: Option<u32>,
+    pub raw_model: Option<u32>,
+    pub raw_stepping: Option<u32>,
+    pub raw_aes: Option<bool>,
+    pub raw_avx: Option<bool>,
+    pub raw_avx2: Option<bool>,
+    pub raw_avx512f: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -79,7 +87,28 @@ pub struct CgroupLimits {
     pub memory_max_mb: Option<u64>,
     pub memory_current_mb: Option<u64>,
     pub cpuset_cpus: Option<String>,
+    pub cpuset_effective: Option<String>,
+    pub cpuset_effective_count: Option<usize>,
     pub notes: Vec<String>,
+}
+
+pub fn cpu_set_count(value: &str) -> Option<usize> {
+    let mut cpus = std::collections::BTreeSet::new();
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() { return None; }
+        if let Some((start, end)) = part.split_once('-') {
+            let start = start.parse::<usize>().ok()?;
+            let end = end.parse::<usize>().ok()?;
+            if start > end || end > 65535 { return None; }
+            cpus.extend(start..=end);
+        } else {
+            let cpu = part.parse::<usize>().ok()?;
+            if cpu > 65535 { return None; }
+            cpus.insert(cpu);
+        }
+    }
+    if cpus.is_empty() { None } else { Some(cpus.len()) }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +143,7 @@ pub fn collect() -> DeepProbe {
     #[cfg(not(target_os = "linux"))]
     {
         let mut p = DeepProbe::default();
+        p.cpu_ids = read_raw_cpuid();
         p.evidence_extra
             .push("Глубокий Linux-зонд доступен только на Linux".into());
         return p;
@@ -187,6 +217,7 @@ fn read_dmi() -> DmiInfo {
 
 #[cfg(target_os = "linux")]
 fn read_cpu_ids() -> CpuIds {
+    let raw = read_raw_cpuid();
     let content = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let get_u32 = |key: &str| -> Option<u32> {
         content
@@ -245,9 +276,55 @@ fn read_cpu_ids() -> CpuIds {
         has_avx512: flags.iter().any(|f| f.starts_with("avx512")),
         has_aes: flags.iter().any(|f| *f == "aes"),
         has_sha: flags.iter().any(|f| f.starts_with("sha")),
-        has_hypervisor_flag: flags.iter().any(|f| *f == "hypervisor"),
+        has_hypervisor_flag: flags.iter().any(|f| *f == "hypervisor") || raw.has_hypervisor_flag,
         has_svm_or_vmx: flags.iter().any(|f| *f == "svm" || *f == "vmx"),
+        raw_vendor: raw.raw_vendor,
+        raw_family: raw.raw_family,
+        raw_model: raw.raw_model,
+        raw_stepping: raw.raw_stepping,
+        raw_aes: raw.raw_aes,
+        raw_avx: raw.raw_avx,
+        raw_avx2: raw.raw_avx2,
+        raw_avx512f: raw.raw_avx512f,
     }
+}
+
+fn read_raw_cpuid() -> CpuIds {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        #[cfg(target_arch = "x86")]
+        use std::arch::x86::{__cpuid, __cpuid_count};
+        #[cfg(target_arch = "x86_64")]
+        use std::arch::x86_64::{__cpuid, __cpuid_count};
+
+        let zero = __cpuid(0);
+        let mut vendor = Vec::new();
+        vendor.extend_from_slice(&zero.ebx.to_le_bytes());
+        vendor.extend_from_slice(&zero.edx.to_le_bytes());
+        vendor.extend_from_slice(&zero.ecx.to_le_bytes());
+        let one = __cpuid(1);
+        let base_family = (one.eax >> 8) & 0xf;
+        let base_model = (one.eax >> 4) & 0xf;
+        let family = if base_family == 0xf { base_family + ((one.eax >> 20) & 0xff) } else { base_family };
+        let model = if base_family == 0x6 || base_family == 0xf {
+            base_model + (((one.eax >> 16) & 0xf) << 4)
+        } else { base_model };
+        let seven = if zero.eax >= 7 { Some(__cpuid_count(7, 0)) } else { None };
+        return CpuIds {
+            raw_vendor: String::from_utf8(vendor).ok(),
+            raw_family: Some(family),
+            raw_model: Some(model),
+            raw_stepping: Some(one.eax & 0xf),
+            raw_aes: Some(one.ecx & (1 << 25) != 0),
+            raw_avx: Some(one.ecx & (1 << 28) != 0),
+            raw_avx2: seven.map(|v| v.ebx & (1 << 5) != 0),
+            raw_avx512f: seven.map(|v| v.ebx & (1 << 16) != 0),
+            has_hypervisor_flag: one.ecx & (1 << 31) != 0,
+            ..Default::default()
+        };
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    CpuIds::default()
 }
 
 #[cfg(target_os = "linux")]
@@ -372,6 +449,25 @@ fn read_cgroup() -> CgroupLimits {
                     }
                 }
             }
+            let mut parent = Path::new(base).parent();
+            while let Some(path) = parent {
+                if !path.starts_with("/sys/fs/cgroup") { break; }
+                if let Ok(raw) = fs::read_to_string(path.join("cpu.max")) {
+                    let mut parts = raw.split_whitespace();
+                    if let (Some(limit), Some(period)) = (parts.next(), parts.next()) {
+                        if let (Ok(limit), Ok(period)) = (limit.parse::<f64>(), period.parse::<f64>()) {
+                            if period > 0.0 {
+                                let quota = limit / period;
+                                if out.cpu_quota_cores.is_none_or(|current| quota < current) {
+                                    out.cpu_quota_cores = Some(quota);
+                                    notes.push(format!("Квота унаследована от {}", path.display()));
+                                }
+                            }
+                        }
+                    }
+                }
+                parent = path.parent();
+            }
             if let Ok(mem) = fs::read_to_string(format!("{base}/memory.max")) {
                 let mem = mem.trim();
                 if mem != "max" {
@@ -391,11 +487,21 @@ fn read_cgroup() -> CgroupLimits {
                     out.cpuset_cpus = Some(cpus);
                 }
             }
+            if let Ok(cpus) = fs::read_to_string(format!("{base}/cpuset.cpus.effective")) {
+                let cpus = cpus.trim().to_string();
+                out.cpuset_effective_count = cpu_set_count(&cpus);
+                if !cpus.is_empty() { out.cpuset_effective = Some(cpus); }
+            }
         } else {
             notes.push("Не удалось определить путь cgroup v2 процесса".into());
         }
     } else if Path::new("/sys/fs/cgroup/cpu").exists() {
         out.version = Some("v1".into());
+        if let Ok(cpus) = fs::read_to_string("/sys/fs/cgroup/cpuset/cpuset.cpus") {
+            let cpus = cpus.trim().to_string();
+            out.cpuset_effective_count = cpu_set_count(&cpus);
+            if !cpus.is_empty() { out.cpuset_effective = Some(cpus); }
+        }
         
         let quota = read_first_line("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
             .and_then(|s| s.parse::<i64>().ok());
@@ -443,6 +549,19 @@ fn current_cgroup_v2_path() -> Option<String> {
         }
     }
     Some("/sys/fs/cgroup".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cpu_set_count;
+
+    #[test]
+    fn counts_effective_cpuset_without_double_counting() {
+        assert_eq!(cpu_set_count("0-3,2,7-8"), Some(6));
+        assert_eq!(cpu_set_count(""), None);
+        assert_eq!(cpu_set_count("4-2"), None);
+        assert_eq!(cpu_set_count("0-1000000"), None);
+    }
 }
 
 #[cfg(target_os = "linux")]

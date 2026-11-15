@@ -1,4 +1,4 @@
-name: Check result
+name: Проверка отправленного результата
 on:
   issues:
     types: [opened, edited]
@@ -6,7 +6,7 @@ permissions:
   contents: read
 jobs:
   check:
-    if: startsWith(github.event.issue.title, 'VDS результат:') && !github.event.issue.pull_request
+    if: (startsWith(github.event.issue.title, 'VDS результат:') || startsWith(github.event.issue.title, 'Проверка сервера:')) && !github.event.issue.pull_request
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

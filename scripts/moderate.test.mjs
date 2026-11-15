@@ -44,3 +44,23 @@ test('проверка и добавление после одобрения', (
     fs.rmSync(resolved, { recursive: true, force: true });
   }
 });
+
+test('принимает новый текст согласия и необязательные пропущенные показатели', async () => {
+  const { extract } = await import('./moderate.mjs');
+  const data = { ...row };
+  delete data.region;
+  delete data.plan;
+  delete data.disk_read_method;
+  delete data.network_download_mbps;
+  const result = extract(`Результат\n\n\`\`\`json\n${JSON.stringify(data)}\n\`\`\`\n\nПодтверждаю публикацию этих данных.`);
+  assert.equal(result.region, '');
+  assert.equal(result.plan, '');
+  assert.equal(result.disk_read_method, 'not_tested');
+  assert.equal(result.network_download_mbps, null);
+});
+
+test('не пропускает ссылки и неизвестные поля', async () => {
+  const { extract } = await import('./moderate.mjs');
+  assert.throws(() => extract(body({ ...row, provider: 'https://example.com' })));
+  assert.throws(() => extract(body({ ...row, private_token: 'secret' })));
+});

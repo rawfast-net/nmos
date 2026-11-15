@@ -37,26 +37,26 @@ function render() {
     const summary = element('summary', 'Условия и все показатели');
     const data = element('div', undefined, 'detail-grid');
     for (const [label, value] of [
-      ['Тест CPU', r.cpu_benchmark_version || 'не проводился'],
-      ['CPU, 1 поток', number(r.cpu_single_ops_per_sec, ' оп/с')],
-      ['CPU, все потоки', number(r.cpu_multi_ops_per_sec, ' оп/с')],
-      ['CPU steal под нагрузкой', number(r.steal_percent_load, '%')],
-      ['Random read', number(r.disk_random_iops, ' IOPS')],
-      ['Random read p99', number(r.disk_random_p99_us, ' мкс')],
+      ['Тест процессора', r.cpu_benchmark_version || 'не проводился'],
+      ['Процессор, 1 поток', number(r.cpu_single_ops_per_sec, ' оп/с')],
+      ['Процессор, все потоки', number(r.cpu_multi_ops_per_sec, ' оп/с')],
+      ['Ожидание процессора под нагрузкой', number(r.steal_percent_load, '%')],
+      ['Случайное чтение', number(r.disk_random_iops, ' IOPS')],
+      ['Задержка чтения (p99)', number(r.disk_random_p99_us, ' мкс')],
       ['Метод чтения', r.disk_read_method || 'не указан'],
       ['Сеть, загрузка', number(r.network_download_mbps, ' Мбит/с')],
-      ['SQLite, 1 поток', number(r.sqlite_single_tps, ' транз./с')],
-      ['SQLite, 4 потока', number(r.sqlite_four_tps, ' транз./с')],
-      ['SQLite, чтение p99', number(r.sqlite_read_p99_ms, ' мс')],
-      ['Версия nmos', r.nmos_version || 'не указана']
+      ['База данных, 1 поток', number(r.sqlite_single_tps, ' транз./с')],
+      ['База данных, 4 потока', number(r.sqlite_four_tps, ' транз./с')],
+      ['База данных, задержка чтения', number(r.sqlite_read_p99_ms, ' мс')],
+      ['Версия NMOS', r.nmos_version || 'не указана']
     ]) data.append(metric(label, value));
     details.append(summary, data);
     if (Number.isInteger(r.source_issue) && r.source_issue > 0) {
-      const source = element('a', `Issue #${r.source_issue}`, 'source-link');
+      const source = element('a', `Отчёт №${r.source_issue}`, 'source-link');
       source.href = `https://github.com/rawfast-net/nmos/issues/${r.source_issue}`;
       details.append(source);
     }
-    card.append(identity, cpu, metric('CPU steal под нагрузкой', number(r.steal_percent_load, '%')), metric('Сеть, загрузка', number(r.network_download_mbps, ' Мбит/с')), details);
+    card.append(identity, cpu, metric('Ожидание процессора под нагрузкой', number(r.steal_percent_load, '%')), metric('Сеть, загрузка', number(r.network_download_mbps, ' Мбит/с')), details);
     list.append(card);
   }
 }

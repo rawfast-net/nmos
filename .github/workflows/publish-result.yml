@@ -1,4 +1,4 @@
-name: Publish approved result
+name: Публикация одобренного результата
 on:
   issues:
     types: [labeled]

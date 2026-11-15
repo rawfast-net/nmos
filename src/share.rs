@@ -69,7 +69,7 @@ fn build(report: &FullReport, provider: String, region: String, plan: String) ->
 
 pub fn offer(report: &FullReport) -> io::Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() { return Ok(()); }
-    let answer = prompt("\nПодготовить результат для публикации? [y/N]: ")?;
+    let answer = prompt("\nПодготовить результат для публикации? [д/Н]: ")?;
     if !matches!(answer.to_lowercase().as_str(), "y" | "yes" | "д" | "да") { return Ok(()); }
     let provider = prompt("Провайдер: ")?;
     if provider.is_empty() { println!("Провайдер не указан. Отменено."); return Ok(()); }
@@ -77,14 +77,18 @@ pub fn offer(report: &FullReport) -> io::Result<()> {
     let plan = prompt("Тариф (необязательно): ")?;
     let public = build(report, provider, region, plan);
     let json = serde_json::to_string_pretty(&public).map_err(io::Error::other)?;
-    println!("\nДанные для публикации:\n{json}\n");
-    println!("Проверьте текст: поля провайдера, тарифа и модели CPU могут содержать введённые вами данные.");
-    println!("Issue в публичном репозитории будет виден всем сразу после отправки.");
-    let answer = prompt("Создать ссылку на черновик Issue? [y/N]: ")?;
-    if !matches!(answer.to_lowercase().as_str(), "y" | "yes" | "д" | "да") { println!("Отменено. Данные не отправлены."); return Ok(()); }
-    let title = format!("VDS результат: {}", public.provider);
-    let body = format!("Результат nmos для проверки перед добавлением на страницу.\n\n```json\n{json}\n```\n\nЯ проверил данные и согласен на их публичное размещение.");
-    println!("\nОткройте ссылку, проверьте текст и отправьте Issue вручную:\nhttps://github.com/rawfast-net/nmos/issues/new?title={}&body={}\n", encode(&title), encode(&body));
+    println!("\nПровайдер: {}", public.provider);
+    if !public.region.is_empty() { println!("Регион: {}", public.region); }
+    if !public.plan.is_empty() { println!("Тариф: {}", public.plan); }
+    println!("Процессор: {}", public.cpu_model);
+    println!("Доступно ядер: {}", public.vcpu);
+    println!("Память: {} МБ", public.ram_mb);
+    println!("\nЭти сведения будут доступны всем. Проверьте их перед отправкой.");
+    let answer = prompt("Продолжить публикацию? [д/Н]: ")?;
+    if !matches!(answer.to_lowercase().as_str(), "y" | "yes" | "д" | "да") { println!("Публикация отменена."); return Ok(()); }
+    let title = format!("Проверка сервера: {}", public.provider);
+    let body = format!("Результат проверки сервера.\n\n```json\n{json}\n```\n\nПодтверждаю публикацию этих данных.");
+    println!("\nОткройте ссылку и подтвердите отправку:\nhttps://github.com/rawfast-net/nmos/issues/new?title={}&body={}\n", encode(&title), encode(&body));
 
     Ok(())
 }

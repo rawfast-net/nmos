@@ -5,21 +5,26 @@ mod cpu;
 mod cpureality;
 mod diskio;
 mod dbbench;
+mod dns;
 mod extras;
 mod memcheck;
+mod mail;
 mod monitor;
 mod network;
 mod oversell;
 mod probe;
 mod report;
+mod reputation;
 mod share;
+mod speedtest;
 mod stress;
 mod system;
 mod tech;
 mod truth;
+mod ui;
 
 use antifraud::ProviderClaims;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use report::FullReport;
 
 #[derive(Parser, Debug)]
@@ -29,6 +34,8 @@ use report::FullReport;
     version
 )]
 struct Args {
+    #[command(subcommand)]
+    command: Option<NmosCommand>,
     #[arg(long, help = "Do not offer to prepare a public result")]
     no_share_prompt: bool,
     #[arg(long, help = "Record passive CPU counters as JSON lines")]
@@ -60,6 +67,30 @@ struct Args {
     #[arg(long)]
     skip_speed: bool,
 
+    #[arg(long, conflicts_with = "no_speedtest")]
+    speedtest: bool,
+
+    #[arg(long)]
+    no_speedtest: bool,
+
+    #[arg(long, default_value = "ookla", value_parser = ["ookla", "iperf3"])]
+    speedtest_backend: String,
+
+    #[arg(long)]
+    server_id: Option<u64>,
+
+    #[arg(long)]
+    country: Option<String>,
+
+    #[arg(long)]
+    city: Option<String>,
+
+    #[arg(long)]
+    accept_speedtest_terms: bool,
+
+    #[arg(long)]
+    speedtest_repeat: bool,
+
     #[arg(long)]
     skip_disk: bool,
 
@@ -67,9 +98,6 @@ struct Args {
     skip_mem: bool,
 
     
-    #[arg(long, default_value_t = 100)]
-    speed_mb: u64,
-
     
     #[arg(long, default_value_t = 256)]
     disk_mb: u64,
@@ -106,10 +134,39 @@ struct Args {
 
     #[arg(long)]
     no_public_ip: bool,
+
+    #[arg(long, help = "Skip public IP DNS blocklist checks")]
+    skip_reputation: bool,
+
+    #[arg(long, help = "Skip repeated TCP latency and loss checks")]
+    skip_quality: bool,
+
+    #[arg(long, help = "Skip outbound SMTP connectivity checks")]
+    skip_mail: bool,
+
+}
+
+#[derive(Debug, Subcommand)]
+enum NmosCommand {
+    Setup {
+        #[arg(long)]
+        speedtest: bool,
+    },
 }
 
 fn main() {
     let args = Args::parse();
+    if let Some(NmosCommand::Setup { speedtest }) = &args.command {
+        if !speedtest {
+            eprintln!("Укажите nmos setup --speedtest");
+            std::process::exit(2);
+        }
+        if let Err(error) = speedtest::setup() {
+            eprintln!("Подготовка Speedtest: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.monitor {
         if let Err(e) = monitor::run(args.monitor_count, args.monitor_interval) {
             eprintln!("Ошибка мониторинга: {e}");
@@ -117,11 +174,11 @@ fn main() {
         }
         return;
     }
+    if !args.json { speedtest::offer_setup(); }
     let duration = args.duration.clamp(0.5, 60.0);
-    let speed_mb = args.speed_mb.clamp(10, 500);
     let disk_mb = args.disk_mb.clamp(64, 1024);
     let mem_mb = args.mem_mb.clamp(64, 4096);
-    let do_speed = !args.skip_speed && !args.offline;
+    let do_speed = !args.skip_speed && !args.no_speedtest && !args.offline;
     let do_public = !args.no_public_ip && !args.offline;
     let do_disk = !args.skip_disk;
     let do_mem = !args.skip_mem;
@@ -135,80 +192,81 @@ fn main() {
         net_mbps: args.claim_net_mbps,
     };
 
-    if !args.json {
-        eprintln!("nmos — NoMoreOverSell");
-        eprintln!("region={}", region);
-        if claims.any() {
-            eprintln!(
-                "claims: cores={:?} ram={:?}GB disk={:?}GB cpu={:?} net={:?}Mbps",
-                claims.cores, claims.ram_gb, claims.disk_gb, claims.cpu_model, claims.net_mbps
-            );
-        } else {
-            eprintln!("hint: pass --claim-* to compare against the plan");
-        }
-    }
+    let total = 13u32;
 
-    let total = 11u32;
-
-    step(1, total, "system");
+    step(1, total, "Система");
     let sys_info = system::collect();
 
-    step(2, total, "cpu");
+    step(2, total, "Процессор");
     let cpu_info = cpu::collect();
 
-    step(3, total, "cpu flags / tech");
+    step(3, total, "Инструкции CPU");
     let tech = tech::collect();
 
-    step(4, total, "dmi / cgroup / cpuid");
+    step(4, total, "DMI, cgroup, CPUID");
     let deep = probe::collect();
 
-    step(5, total, "extras (psi, timers, …)");
+    step(5, total, "Дополнительные показатели");
     let extras = extras::collect(&sys_info, &cpu_info);
 
-    step(6, total, "cpuid ↔ model");
+    step(6, total, "Сверка модели CPU");
     let cpu_reality = cpureality::analyze(&cpu_info, &deep, &tech);
 
     let mem = if do_mem {
-        step(7, total, &format!("ram check ~{mem_mb} MB"));
+        step(7, total, &format!("Проверка памяти, {mem_mb} MiB"));
         Some(memcheck::run(
             mem_mb,
             sys_info.ram_total_mb,
             sys_info.swap_total_mb,
         ))
     } else {
-        step(7, total, "ram check skipped");
+        step(7, total, "Память пропущена");
         None
     };
 
-    step(8, total, "network");
+    step(8, total, "Сеть");
     let net_info = network::collect(network::NetOptions {
         fetch_public_ip: do_public,
         run_speed: do_speed,
-        speed_size_mb: speed_mb,
         region,
+        run_quality: !args.offline && !args.skip_quality,
+        offline: args.offline,
+        speedtest_backend: args.speedtest_backend,
+        speedtest_server_id: args.server_id,
+        speedtest_country: args.country.clone(),
+        speedtest_city: args.city,
+        speedtest_manual_country: args.country.is_some() || (args.region.len() == 2 && args.region != "auto"),
+        speedtest_accept_terms: args.accept_speedtest_terms,
+        speedtest_repeat: args.speedtest_repeat,
     });
-    if !args.json {
-        eprintln!("  resolved region: {}", net_info.resolved_region);
-    }
+    step(9, total, "Репутация IP");
+    let reputation = if args.offline || args.skip_reputation {
+        None
+    } else {
+        net_info.public_ip.as_deref().and_then(reputation::check)
+    };
+
+    step(10, total, "Исходящая почта");
+    let mail_egress = if args.offline || args.skip_mail { None } else { Some(mail::check()) };
 
     let disk = if do_disk {
-        step(9, total, &format!("disk io ~{disk_mb} MB"));
+        step(11, total, &format!("Диск, {disk_mb} MiB"));
         Some(diskio::run(disk_mb))
     } else {
-        step(9, total, "disk skipped");
+        step(11, total, "Диск пропущен");
         None
     };
 
     let stress = if args.skip_stress {
-        step(10, total, "stress skipped");
+        step(12, total, "Нагрузка CPU пропущена");
         None
     } else {
         let n = cpu_info.logical_cores.max(1);
-        step(10, total, &format!("cpu stress {duration:.1}s × 2, {n} threads"));
+        step(12, total, &format!("Нагрузка CPU, 3 повтора по {duration:.1} с, {n} потоков"));
         Some(stress::run(duration, n))
     };
 
-    step(11, total, "verdict");
+    step(13, total, "Анализ результатов");
     let extras = refresh_load_metrics(extras, stress.as_ref());
     let oversell = oversell::analyze(&cpu_info, stress.as_ref());
     let estimate = oversell::estimate_real_cpu(&cpu_info, stress.as_ref(), &oversell);
@@ -246,7 +304,7 @@ fn main() {
     } else { None };
 
     let report = FullReport {
-        schema_version: 2,
+        schema_version: 3,
         nmos_version: env!("CARGO_PKG_VERSION"),
         timestamp: chrono::Local::now().to_rfc3339(),
         claims,
@@ -258,6 +316,8 @@ fn main() {
         extras,
         memcheck: mem,
         network: net_info,
+        reputation,
+        mail_egress,
         diskio: disk,
         stress,
         oversell,
@@ -267,6 +327,7 @@ fn main() {
         db_bench,
     };
 
+    ui::finish();
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
     } else {
@@ -321,5 +382,5 @@ fn refresh_load_metrics(
 }
 
 fn step(n: u32, total: u32, msg: &str) {
-    eprintln!("[{n}/{total}] {msg}");
+    ui::step(n, total, msg);
 }
